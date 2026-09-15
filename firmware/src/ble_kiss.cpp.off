@@ -1,0 +1,667 @@
+// ble_kiss.cpp — Bluetooth LE host link (KISS over the Nordic UART Service).
+// See ble_kiss.h. The framing is NOT reimplemented here: this file is only the
+// byte sink/source of the Bluetooth transport for the KISS core in kiss.cpp, and
+// the text <-> AX.25 <-> KISS conversion is shared with the USB transport
+// through tncBuildKissFrame() / tncSendHostFrame() in tnc.cpp.
+//
+// Threading: the SoftDevice/BLE library runs its own FreeRTOS task, so the raw
+// event callback (bleEventCb) only records what happened in plain flags. Every
+// log line, every OLED write and everything that touches the flash happens in
+// bleLoop(), from the main loop. That keeps the trip log out of a second task.
+// License: GPL-3.0
+
+#include "ble_kiss.h"
+
+#include <Arduino.h>
+#include <bluefruit.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "ax25.h"
+#include "diag.h"
+#include "display.h"
+#include "flog.h"
+#include "kiss.h"
+#include "tnc.h"
+
+namespace {
+
+DigiConfig *gCfg = nullptr;
+
+BLEUart gUart;      // Nordic UART Service (RX = phone writes, TX = notifications)
+KissState gKiss;    // this transport's own KISS state machine (USB has another)
+
+char gAdvName[30] = "";  // advertising name, callsign included
+bool gStackUp = false;   // Bluefruit.begin() already done
+bool gServiceUp = false; // NUS created and advertising data ready
+bool gEnabled = false;   // last applied cfg.bleEnabled
+uint16_t gConnHandle = BLE_CONN_HANDLE_INVALID;
+bool gSecured = false;   // link is encrypted (BLE_GAP_EVT_CONN_SEC_UPDATE)
+char gPeerAddr[20] = "";
+
+// --- frames on their way to the host (encoded KISS bytes) -------------------
+constexpr size_t kTxRing = 1024;   // power of two, ~1.5 x the longest frame
+constexpr size_t kTxChunkMax = 20; // never more than 20 B per notification
+constexpr uint32_t kTxChunkGapMs = 4;  // small pause between notifications
+uint8_t gTxBuf[kTxRing];
+size_t gTxHead = 0;  // write side
+size_t gTxTail = 0;  // read side
+uint32_t gLastChunkMs = 0;
+
+uint32_t gFramesIn = 0, gFramesOut = 0, gBytesOut = 0, gDropped = 0;
+uint32_t gPairReq = 0, gPairOk = 0, gPairFail = 0;
+int16_t gLastPairStatus = -1;
+
+// --- pairing (set by the BLE task, consumed by bleLoop) --------------------
+constexpr uint32_t kPinFallbackMs = 400;   // no PIN in the event: show ours
+constexpr uint32_t kPinMaxMs = 60000;      // never leave the splash stuck
+volatile bool gEvtPinReady = false;        // PASSKEY_DISPLAY with a passkey
+volatile bool gEvtPinFromStack = false;
+char gEvtPin[8] = "";
+volatile bool gEvtPairReq = false;         // SEC_PARAMS_REQUEST seen
+uint32_t gEvtPairReqMs = 0;
+volatile bool gEvtKeyReq = false;          // AUTH_KEY_REQUEST (we have no keypad)
+volatile bool gEvtAuth = false;            // AUTH_STATUS (success or failure)
+volatile uint8_t gEvtAuthStatus = 0;
+volatile bool gEvtPinClear = false;        // something ended the attempt
+volatile bool gEvtConn = false;
+volatile bool gEvtDisc = false;
+volatile uint8_t gEvtDiscReason = 0;
+volatile bool gEvtSecUpdate = false;
+volatile uint8_t gEvtSecMode = 0, gEvtSecLevel = 0;
+
+bool gPinShown = false;
+uint32_t gPinSinceMs = 0;
+
+// ---------------------------------------------------------------- logging ---
+// One line per event, in the trip log (same mechanism the KISS layer uses) and
+// on USB when the port is not busy with a TNC host. The developer has no BLE
+// central on the bench: this log IS the way to see the logic run.
+void bleLog(const char *fmt, ...) {
+  char msg[96];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+
+  flogLine("BLE %s", msg);
+  if (diagStreaming()) {
+    diagNote(msg);
+  } else if (!tncActive()) {
+    Serial.print(F("BLE "));
+    Serial.println(msg);
+  }
+}
+
+// ------------------------------------------------------------------ helpers --
+bool hostReady() {
+  if (gConnHandle == BLE_CONN_HANDLE_INVALID) return false;
+  // The CCCD can only be written over an encrypted link with MITM protection
+  // (see bleStartStack), so "notifications on" already proves a paired host.
+  return gUart.notifyEnabled(gConnHandle);
+}
+
+void txReset() {
+  gTxHead = 0;
+  gTxTail = 0;
+}
+
+bool txPush(const uint8_t *p, size_t n) {
+  const size_t used = (gTxHead + kTxRing - gTxTail) & (kTxRing - 1);
+  if (used + n >= kTxRing) return false;  // no room: the frame is dropped whole
+  for (size_t i = 0; i < n; i++) {
+    gTxBuf[gTxHead] = p[i];
+    gTxHead = (gTxHead + 1) & (kTxRing - 1);
+  }
+  return true;
+}
+
+// Write at most ONE notification (<= 20 bytes) per call, with a pause between
+// them: the SoftDevice has a small notification queue and a phone link is
+// slower than the radio. The bytes are only removed from the ring once the
+// stack has really taken them, so a busy link retries instead of losing data.
+void txPump(uint32_t now) {
+  if (gTxTail == gTxHead) return;
+  if (!hostReady()) {
+    const size_t lost = (gTxHead + kTxRing - gTxTail) & (kTxRing - 1);
+    txReset();  // the host is gone: frames for it are worthless now
+    gDropped++;
+    bleLog("out dropped %ub: no host listening", (unsigned)lost);
+    return;
+  }
+  if ((uint32_t)(now - gLastChunkMs) < kTxChunkGapMs) return;
+
+  size_t chunk = kTxChunkMax;
+  const uint16_t mtu = Bluefruit.Connection(gConnHandle)
+                           ? Bluefruit.Connection(gConnHandle)->getMtu()
+                           : 23;
+  if (mtu > 3 && (size_t)(mtu - 3) < chunk) chunk = (size_t)(mtu - 3);
+  if (chunk == 0) return;
+
+  uint8_t buf[kTxChunkMax];
+  size_t n = 0, idx = gTxTail;
+  while (n < chunk && idx != gTxHead) {
+    buf[n++] = gTxBuf[idx];
+    idx = (idx + 1) & (kTxRing - 1);
+  }
+
+  gLastChunkMs = now;
+  if (gUart.write(gConnHandle, buf, n) == n) {
+    gTxTail = idx;
+    gBytesOut += (uint32_t)n;
+  }
+  // Write refused (notification queue full): the bytes stay queued and the next
+  // main-loop pass retries them.
+}
+
+// ------------------------------------------------------------- KISS bytes ---
+// One complete AX.25 frame from the host: same transmitter the USB path uses.
+void onKissFrame(const uint8_t *frame, size_t len) {
+  gFramesIn++;
+  if (!hostReady()) {
+    gDropped++;
+    bleLog("in %ub dropped: host not ready", (unsigned)len);
+    return;
+  }
+  const int16_t st = tncSendHostFrame(frame, len);  // 0 = RADIOLIB_ERR_NONE
+  if (st == 0) {
+    bleLog("in %ub -> radio OK", (unsigned)len);
+  } else {
+    bleLog("in %ub -> radio err %d", (unsigned)len, (int)st);
+  }
+}
+
+void rxDrain(uint32_t now) {
+  // Bounded per pass: a host that floods the link must not starve the radio,
+  // the digipeater or the OLED.
+  uint16_t budget = 512;
+  while (budget-- > 0 && gUart.available() > 0) {
+    const int c = gUart.read();
+    if (c < 0) break;
+    kissStateFeed(&gKiss, (uint8_t)c, now);
+  }
+  // A frame the host left half-sent is abandoned after a second (kissPoll), so
+  // it can never swallow the bytes that follow it.
+  kissStatePoll(&gKiss, now);
+}
+
+// ---------------------------------------------------------------- callbacks --
+void onConnect(uint16_t conn_handle) {
+  gConnHandle = conn_handle;
+  gSecured = false;
+  // Only the cached peer address is used. Bluefruit's BLEConnection::getPeerName()
+  // is deliberately NOT called: it does a GATT client read that waits up to
+  // 500 ms for a response only the BLE task itself can deliver, and this callback
+  // runs inside that same task (it can only stall and time out).
+  gPeerAddr[0] = '\0';
+  BLEConnection *conn = Bluefruit.Connection(conn_handle);
+  if (conn != nullptr) {
+    const ble_gap_addr_t addr = conn->getPeerAddr();
+    snprintf(gPeerAddr, sizeof(gPeerAddr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             addr.addr[5], addr.addr[4], addr.addr[3], addr.addr[2], addr.addr[1],
+             addr.addr[0]);
+  }
+  gEvtConn = true;
+  gEvtPinClear = true;  // a new link: any pairing splash from before is over
+}
+
+void onDisconnect(uint16_t conn_handle, uint8_t reason) {
+  (void)conn_handle;
+  gConnHandle = BLE_CONN_HANDLE_INVALID;
+  gSecured = false;
+  gEvtDiscReason = reason;
+  gEvtDisc = true;
+  // Failed or abandoned pairing: the splash must go, never stay for ever.
+  gEvtPinClear = true;
+}
+
+// Raw SoftDevice events. Only "note it down" here: the log line, the OLED and
+// the flash write happen in bleLoop(), on the main loop.
+void bleEventCb(ble_evt_t *evt) {
+  switch (evt->header.evt_id) {
+    case BLE_GAP_EVT_SEC_PARAMS_REQUEST: {
+      const ble_gap_sec_params_t *peer =
+          &evt->evt.gap_evt.params.sec_params_request.peer_params;
+      gEvtPairReqMs = millis();
+      gEvtPairReq = true;
+      gEvtPinFromStack = false;
+      (void)peer;  // mitm/io_caps are logged in bleLoop from the same struct
+      break;
+    }
+    case BLE_GAP_EVT_PASSKEY_DISPLAY: {
+      const ble_gap_evt_passkey_display_t *pd =
+          &evt->evt.gap_evt.params.passkey_display;
+      memcpy(gEvtPin, pd->passkey, 6);
+      gEvtPin[6] = '\0';
+      gEvtPinFromStack = true;
+      gEvtPinReady = true;
+      gEvtPairReq = false;  // the real passkey is here: no need for the fallback
+      break;
+    }
+    case BLE_GAP_EVT_AUTH_KEY_REQUEST:
+      // The peer wants US to type a PIN (it is displaying one). This node has
+      // display only, no keypad: nothing we can do, and the pairing will fail.
+      gEvtKeyReq = true;
+      gEvtPairReq = false;
+      gEvtPinClear = true;
+      break;
+    case BLE_GAP_EVT_AUTH_STATUS:
+      gEvtAuthStatus = evt->evt.gap_evt.params.auth_status.auth_status;
+      gEvtAuth = true;
+      break;
+    case BLE_GAP_EVT_CONN_SEC_UPDATE:
+      gEvtSecMode = evt->evt.gap_evt.params.conn_sec_update.conn_sec.sec_mode.sm;
+      gEvtSecLevel = evt->evt.gap_evt.params.conn_sec_update.conn_sec.sec_mode.lv;
+      gEvtSecUpdate = true;
+      break;
+    default:
+      break;
+  }
+}
+
+// ------------------------------------------------------------ stack / mode ---
+void buildAdvName() {
+  // The advertised name must contain the callsign: with several nodes in range
+  // a person has to be able to tell them apart. 29 bytes is what fits in a
+  // COMPLETE local name in the scan response; if the callsign does not fit next
+  // to the prefix the callsign alone is used, never a chopped one.
+  char full[40];
+  snprintf(full, sizeof(full), "Faketec APRS %s", gCfg != nullptr ? gCfg->callsign : "");
+  if (strlen(full) < sizeof(gAdvName)) {
+    snprintf(gAdvName, sizeof(gAdvName), "%s", full);
+  } else {
+    snprintf(gAdvName, sizeof(gAdvName), "%.29s",
+             gCfg != nullptr ? gCfg->callsign : "APRS");
+  }
+}
+
+// ---- HF clock (48 MHz) state: the point of the whole start-up reordering ----
+// Hardware log, 2026-09-13: with Bluetooth on, the node kept transmitting but
+// its OLED went black and its USB serial disappeared. Those are exactly the two
+// things that depend on the 48 MHz high-frequency clock, and the SoftDevice
+// takes the CLOCK peripheral over when it starts, so Bluetooth has to be started
+// BEFORE the display is initialised (see setup() in main.cpp).
+//
+// This records the state of HFCLKSTAT -- HCLK, the 64 MHz clock the 48 MHz USB
+// clock is derived from -- at the last moment it can be read safely: BEFORE
+// Bluefruit.begin(), while the SoftDevice is still down and the application owns
+// the CLOCK peripheral. A single read (no request, no release, no write), which
+// the core itself does in variant.cpp for the same reason, so it cannot disturb
+// the start-up.
+//
+// After the stack is up the register is NOT read again on purpose: the
+// SoftDevice owns CLOCK then, and an application read of a protected peripheral
+// raises a PERIPH_ACCESS fault (exactly the kind of crash this work exists to
+// avoid). The working OLED is the real confirmation that the 48 MHz clock came
+// up, and this captured value is the "before" side of the comparison; the same
+// value is written again on the line that reports a successful start (11/11).
+uint32_t gHfclkBeforeBle = 0;
+
+void captureHfclkState() { gHfclkBeforeBle = NRF_CLOCK->HFCLKSTAT; }
+
+// Bring the stack up once. Everything that must happen before begin() (there is
+// nothing here today) and everything that must happen after it is in this order
+// on purpose: it matches the Adafruit bleuart / pairing_pin examples.
+bool bleStartStack() {
+  if (gStackUp) return gServiceUp;
+
+  // Markers around every step of the start-up (11 of them). The trip log is
+  // written to the internal flash SYNCHRONOUSLY (flog.cpp: each flogLine() does
+  // its own NVMC program and waits for READY before returning, there is no
+  // buffer to flush), so the line is already in flash when the next instruction
+  // runs. That makes the LAST marker in the log the step where the node died --
+  // which is the only way to see it, because the USB port disappears with the
+  // crash. These lines only exist while Bluetooth is being started (bleEnabled
+  // true) and only record while the trip log is on (tracker modes).
+  flogLine("EVT ble 1/11: init del stack Bluetooth");
+  bleLog("init: bleEnabled=true, arrancando Bluetooth");
+
+  // Last safe read of the clock state (see captureHfclkState above): it goes on
+  // the line that reports the successful start, so the log carries the "before"
+  // side of the clock comparison.
+  captureHfclkState();
+
+  flogLine("EVT ble 2/11: Bluefruit.begin()");
+  if (!Bluefruit.begin(1, 0)) {  // ONE peripheral link, no central role
+    bleLog("begin() FAILED: Bluetooth stays off");
+    return false;
+  }
+  gStackUp = true;
+
+  flogLine("EVT ble 3/11: txPower(+4dBm)");
+  Bluefruit.setTxPower(4);  // +4 dBm, as in the Adafruit examples
+
+  flogLine("EVT ble 4/11: setName");
+  Bluefruit.setName(gAdvName);
+
+  // Static 6-digit PIN + "the node can DISPLAY a PIN" + MITM required. The IO
+  // capability is what makes the phone ask for the PIN and the node show it.
+  flogLine("EVT ble 5/11: security PIN");
+  if (!Bluefruit.Security.setPIN(gCfg->blePin)) {
+    // setPIN() refuses anything that is not exactly 6 digits. The config
+    // validation should make that impossible; if it ever happens, never leave
+    // the node unpairable in silence.
+    bleLog("setPIN refused, using 123456");
+    Bluefruit.Security.setPIN("123456");
+  }
+
+  flogLine("EVT ble 6/11: IO caps + MITM");
+  Bluefruit.Security.setIOCaps(true, false, false);
+  Bluefruit.Security.setMITM(true);
+
+  flogLine("EVT ble 7/11: callbacks");
+  Bluefruit.setEventCallback(bleEventCb);
+  Bluefruit.Periph.setConnectCallback(onConnect);
+  Bluefruit.Periph.setDisconnectCallback(onDisconnect);
+
+  // KISS characteristics: read AND write need an encrypted link with
+  // man-in-the-middle protection. Without pairing, the stack answers every read,
+  // every write and the CCCD write that turns notifications on with an
+  // authentication error, so an unpaired device cannot see or inject a frame.
+  // (setPermission() must be called before begin(): BLEUart::begin() recomputes
+  // the attribute permissions from it.)
+  flogLine("EVT ble 8/11: NUS begin()");
+  gUart.setPermission(SECMODE_ENC_WITH_MITM, SECMODE_ENC_WITH_MITM);
+  if (!gUart.begin()) {
+    bleLog("NUS service begin() FAILED");
+    return false;
+  }
+
+  // Advertising packet (same layout as the Adafruit bleuart example): flags,
+  // TX power and the NUS UUID; the name goes in the scan response, which is
+  // where a phone looks for it.
+  flogLine("EVT ble 9/11: datos de advertising");
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
+  Bluefruit.Advertising.addService(gUart);
+  Bluefruit.ScanResponse.addName();
+  Bluefruit.Advertising.setInterval(32, 244);  // 20 ms fast / 152.5 ms slow
+  Bluefruit.Advertising.setFastTimeout(30);
+
+  gServiceUp = true;
+  bleLog("stack up: NUS + PIN + MITM (MTU %u)", (unsigned)Bluefruit.getMaxMtu(BLE_GAP_ROLE_PERIPH));
+  return true;
+}
+
+void bleApply(bool on) {
+  // gEnabled records the value that has been APPLIED (or attempted), not
+  // "Bluetooth is working": if starting fails, bleLoop() must not retry it on
+  // every pass (that would flood the trip log). Toggling the switch off and on
+  // is the operator's way to ask for a retry.
+  gEnabled = on;
+  if (!on) {
+    if (gStackUp) {
+      // restartOnDisconnect() has to go first: otherwise dropping the host would
+      // start advertising again behind our back.
+      Bluefruit.Advertising.restartOnDisconnect(false);
+      if (Bluefruit.Advertising.isRunning()) Bluefruit.Advertising.stop();
+      if (gConnHandle != BLE_CONN_HANDLE_INVALID) Bluefruit.disconnect(gConnHandle);
+      txReset();
+    }
+    bleLog("stop: advertising off (bleEnabled=false)");
+    return;
+  }
+
+  // Steps 10/11 and 11/11 of the sequence. The safety latch that used to live
+  // here (a retained register written before the stack and cleared once
+  // advertising ran) is gone for good: it wrote a register the board's own
+  // bootloader also uses, it reported a crash every other boot because the
+  // clear-on-success never got the chance to run, and it is not worth the risk.
+  // Nothing is carried across a reset any more.
+  buildAdvName();
+
+  if (!bleStartStack()) return;  // reason already logged
+
+  if (!Bluefruit.Advertising.isRunning()) {
+    Bluefruit.Advertising.restartOnDisconnect(true);
+    flogLine("EVT ble 10/11: advertising start()");
+    if (!Bluefruit.Advertising.start(0)) {
+      bleLog("advertising start FAILED");
+      return;
+    }
+  }
+
+  bleLog("start: advertising as \"%s\" (PIN %s, pairing required)", gAdvName,
+         gCfg->blePin);
+  // The clock line: HFCLKSTAT as it was immediately BEFORE the stack took over,
+  // plus why there is no "after" reading (the SoftDevice owns CLOCK from
+  // Bluefruit.begin() on and the application may not touch that peripheral).
+  // The OLED and the USB coming up are the live confirmation that the 48 MHz
+  // clock is running and that this order is the right one.
+  flogLine("EVT ble 11/11: stack arriba y advertising en marcha (reloj HF "
+           "antes=0x%08lX; despues no se puede leer, el SoftDevice es dueno de "
+           "CLOCK)",
+           (unsigned long)gHfclkBeforeBle);
+}
+
+// Config changes that must reach a running stack (menu, web, CLI).
+void bleWatchConfig() {
+  if (!gStackUp) return;
+
+  static char appliedPin[8] = "";
+  if (appliedPin[0] == '\0') {
+    snprintf(appliedPin, sizeof(appliedPin), "%s", gCfg->blePin);
+  } else if (strcmp(appliedPin, gCfg->blePin) != 0) {
+    if (Bluefruit.Security.setPIN(gCfg->blePin)) {
+      bleLog("PIN changed to %s (takes effect on the next pairing)", gCfg->blePin);
+    } else {
+      bleLog("PIN %s refused (6 digits needed): kept the old one", gCfg->blePin);
+    }
+    snprintf(appliedPin, sizeof(appliedPin), "%s", gCfg->blePin);
+  }
+
+  static char appliedCall[16] = "";
+  if (appliedCall[0] == '\0') {
+    snprintf(appliedCall, sizeof(appliedCall), "%s", gCfg->callsign);
+  } else if (strcmp(appliedCall, gCfg->callsign) != 0) {
+    buildAdvName();
+    Bluefruit.setName(gAdvName);
+    snprintf(appliedCall, sizeof(appliedCall), "%s", gCfg->callsign);
+    bleLog("name changed to \"%s\"", gAdvName);
+  }
+}
+
+// Pairing splash + the deferred log of everything the BLE task noticed.
+void pairingLoop(uint32_t now) {
+  if (gEvtConn) {
+    gEvtConn = false;
+    gSecured = false;
+    bleLog("host connected: peer %s", gPeerAddr);
+  }
+  if (gEvtDisc) {
+    gEvtDisc = false;
+    gSecured = false;
+    bleLog("host disconnected (reason 0x%02X)", (unsigned)gEvtDiscReason);
+  }
+  if (gEvtSecUpdate) {
+    gEvtSecUpdate = false;
+    gSecured = (gEvtSecMode >= 1);
+    bleLog("link security: mode %u level %u (%s)", (unsigned)gEvtSecMode,
+           (unsigned)gEvtSecLevel, gSecured ? "encrypted" : "open");
+  }
+  if (gEvtPairReq) {
+    if ((uint32_t)(now - gEvtPairReqMs) >= kPinFallbackMs) {
+      gEvtPairReq = false;
+      gPairReq++;
+      bleLog("pairing requested (#%u): the stack sent no passkey event",
+             (unsigned)gPairReq);
+      if (!gPinShown && gCfg != nullptr) {
+        // No PIN obtainable from the event: show the CONFIGURED one, which is
+        // the one the phone is being asked for (static PIN pairing).
+        displayPinSplash(gCfg->blePin, false);
+        gPinShown = true;
+        gPinSinceMs = now;
+        bleLog("PIN %s shown on the OLED (configured, not from the event)",
+               gCfg->blePin);
+      }
+    }
+  }
+  if (gEvtPinReady) {
+    char pin[8];
+    memcpy(pin, gEvtPin, sizeof(pin));
+    const bool fromStack = gEvtPinFromStack;
+    gEvtPinReady = false;
+    gEvtPairReq = false;
+    gPairReq++;
+    displayPinSplash(pin, fromStack);
+    gPinShown = true;
+    gPinSinceMs = now;
+    bleLog("pairing requested (#%u): PIN %s shown on the OLED", (unsigned)gPairReq,
+           pin);
+  }
+  if (gEvtKeyReq) {
+    gEvtKeyReq = false;
+    bleLog("pairing: the phone wants to display the PIN and have us type it "
+           "(no keypad here): it will fail");
+  }
+  if (gEvtAuth) {
+    gEvtAuth = false;
+    const uint8_t st = gEvtAuthStatus;
+    gLastPairStatus = (int16_t)st;
+    if (st == BLE_GAP_SEC_STATUS_SUCCESS) {
+      gPairOk++;
+      bleLog("pairing OK (#%u)", (unsigned)gPairOk);
+    } else {
+      gPairFail++;
+      bleLog("pairing FAILED status %u (#%u)", (unsigned)st, (unsigned)gPairFail);
+    }
+    // Paired or failed, the splash has done its job: remove it right away.
+    if (gPinShown) {
+      displayPinSplashClear();
+      gPinShown = false;
+    }
+  }
+  if (gEvtPinClear) {
+    gEvtPinClear = false;
+    if (gPinShown) {
+      displayPinSplashClear();
+      gPinShown = false;
+      bleLog("pairing splash removed (attempt ended)");
+    }
+  }
+  if (gPinShown && (uint32_t)(now - gPinSinceMs) >= kPinMaxMs) {
+    // Belt and braces: even if no event ever arrives, the screen can never be
+    // left stuck showing the PIN.
+    displayPinSplashClear();
+    gPinShown = false;
+    bleLog("pairing splash removed (60 s timeout)");
+  }
+}
+
+}  // namespace
+
+// ------------------------------------------------------------------ public ---
+void bleBindConfig(DigiConfig *cfg) { gCfg = cfg; }
+
+void bleInit() {
+  // RESCATE TEMPORAL (2026-09-13): este build ignora a proposito el ajuste de
+  // Bluetooth y sale aqui, antes de tocar nada y antes de escribir en el log,
+  // porque un nodo con Bluetooth activado se queda sin pantalla y sin puerto
+  // USB. Vale para cualquier config guardada, bleEnabled=true incluido. Cuando
+  // el arranque con Bluetooth este resuelto, quitar estas dos lineas.
+  return;
+
+  // (Inalcanzable a proposito mientras dure el rescate: el codigo de abajo se
+  // queda tal cual para poder volver a el quitando el return.)
+  buildAdvName();
+  kissStateInit(&gKiss);
+  kissStateSetHandler(&gKiss, onKissFrame);
+  txReset();
+
+  const bool prevLog = flogEnabled();
+
+  if (!gCfg->bleEnabled) {
+    gEnabled = false;
+    flogLine("BLE off (bleEnabled=false at boot)");
+    if (!tncActive()) Serial.println(F("BLE off (bleEnabled=false)"));
+    flogSetEnabled(prevLog);
+    return;
+  }
+
+  // Bluetooth is on in the config, so bleApply() starts it and the eleven step
+  // markers of the sequence run from there (bleStartStack() writes 1/11..9/11,
+  // bleApply() writes 10/11 and 11/11). They use the normal flogLine()
+  // mechanism, so they only record while the trip log is on (tracker modes).
+  // There is no cross-reset state any more: no retained flags, no
+  // skip-on-next-boot, the stack is started exactly as it always was.
+  bleApply(true);
+  flogSetEnabled(prevLog);
+}
+
+void bleLoop() {
+  if (gCfg == nullptr) return;
+  const uint32_t now = millis();
+
+  // The switch (OLED menu, web configurator, CLI "set bleEnabled 0") takes
+  // effect here, with no reboot: disabling stops advertising immediately.
+  if (gCfg->bleEnabled != gEnabled) bleApply(gCfg->bleEnabled);
+
+  if (gStackUp) {
+    bleWatchConfig();
+    rxDrain(now);
+    txPump(now);
+  }
+  pairingLoop(now);
+}
+
+void bleOutputFrameText(const char *textFrame) {
+  if (!gServiceUp || textFrame == nullptr || textFrame[0] == '\0') return;
+  if (!hostReady()) return;  // nobody listening: not an error, not a drop
+
+  uint8_t out[(2 * (AX25_MAX_INFO + 80)) + 4];
+  TncFrameInfo info;
+  const size_t n = tncBuildKissFrame(textFrame, out, sizeof(out), &info);
+  if (n == 0) {
+    gDropped++;  // reason already logged and counted by tncBuildKissFrame
+    return;
+  }
+  if (!txPush(out, n)) {
+    gDropped++;
+    bleLog("out dropped: host buffer full");
+    return;
+  }
+  gFramesOut++;
+  bleLog("out %s>%s %ub -> host", info.src, info.dst, (unsigned)info.axLen);
+}
+
+void bleShutdown() {
+  if (!gStackUp) return;
+  Bluefruit.Advertising.restartOnDisconnect(false);
+  if (Bluefruit.Advertising.isRunning()) Bluefruit.Advertising.stop();
+  if (gConnHandle != BLE_CONN_HANDLE_INVALID) {
+    Bluefruit.disconnect(gConnHandle);
+    delay(100);  // give the disconnect a chance to reach the phone
+  }
+  gConnHandle = BLE_CONN_HANDLE_INVALID;
+  gStackUp = false;
+  gServiceUp = false;
+  gEnabled = false;
+  txReset();
+  // The SoftDevice has to be down before System OFF / a soft reset (power.cpp
+  // writes NRF_POWER->SYSTEMOFF directly): otherwise the radio and the LFCLK
+  // stay on and the sleep current is not what the battery maths assume.
+  sd_softdevice_disable();
+}
+
+bool bleOn() { return gStackUp && gServiceUp; }
+bool bleSoftDeviceUp() { return gStackUp; }
+bool bleAdvertising() { return gServiceUp && Bluefruit.Advertising.isRunning(); }
+bool bleConnected() { return gConnHandle != BLE_CONN_HANDLE_INVALID; }
+bool bleHostReady() { return gServiceUp && hostReady(); }
+
+uint8_t bleStateCode() {
+  if (!bleOn()) return 0;
+  if (!bleConnected()) return 1;
+  return bleHostReady() ? 3 : 2;
+}
+
+const char *bleAdvName() { return gAdvName; }
+uint32_t bleFramesIn() { return gFramesIn; }
+uint32_t bleFramesOut() { return gFramesOut; }
+uint32_t bleBytesOut() { return gBytesOut; }
+uint32_t bleFramesDropped() { return gDropped; }
+uint32_t blePairRequests() { return gPairReq; }
+uint32_t blePairOk() { return gPairOk; }
+uint32_t blePairFail() { return gPairFail; }
+int16_t bleLastPairStatus() { return gLastPairStatus; }

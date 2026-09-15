@@ -1,0 +1,11 @@
+
+# La lista de tareas del operador es PERSONAL: habla de sus amigos, su material y sus
+# decisiones. El proyecto no la necesita para nada.
+PENDIENTE.md
+
+# ------------------------------------------------- FIRMWARE PUBLICADO (SI VA)
+# El .uf2 es un binario, y por regla no se versionan... menos los que se publican a
+# proposito para que la gente los descargue (el flasher de la web apunta aqui).
+# Son un build LIMPIO: no llevan la configuracion de nadie dentro.
+!firmware/release/
+!firmware/release/*.uf2
