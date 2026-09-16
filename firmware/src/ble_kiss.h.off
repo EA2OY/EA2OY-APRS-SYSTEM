@@ -1,0 +1,87 @@
+// ble_kiss.h — Bluetooth LE host link: KISS over the Nordic UART Service (NUS).
+//
+// The file is deliberately NOT called ble.h: Bluefruit52Lib's bluefruit_common.h
+// does #include "ble.h" to reach the SoftDevice header, and src/ is on the
+// compiler include path, so a src/ble.h shadows the Nordic one and breaks the
+// whole library (verified: ble_evt_t and BLE_CONN_HANDLE_INVALID disappeared).
+// The name mirrors the existing test tools (tools/ble_kiss.html,
+// tools/ble_kiss_server.js).
+//
+// Bluetooth is a SECOND way for a host (phone app, browser) to talk to the node,
+// exactly like the USB cable: bytes arriving on the NUS RX characteristic go
+// into the KISS core (src/kiss.cpp, the same code the USB port uses, a second
+// KissState instance) and every frame the radio hears is written back to the NUS
+// TX characteristic as KISS notifications.
+//
+// It is deliberately NOT tied to the USB TNC selector (cfg.tncProtocol): only
+// that selector put to KISS makes the node stop sending its own packets
+// (tncHostDriven() in main.cpp). Bluetooth on + selector off = the node keeps
+// beaconing as usual AND a connected host can send and receive frames.
+//
+// Pairing: the node can DISPLAY a PIN (OLED), so the stack asks the phone for
+// the 6-digit cfg.blePin and the node shows it on the screen while the pairing
+// is in progress (Meshtastic behaviour). The KISS characteristics require an
+// encrypted link WITH man-in-the-middle protection, so a device that has not
+// paired can neither read nor write them.
+// License: GPL-3.0
+
+#pragma once
+
+#include <Arduino.h>
+
+#include "config.h"
+
+// Bind the live config (call once at boot, after the config is loaded).
+void bleBindConfig(DigiConfig *cfg);
+
+// Start Bluetooth when cfg.bleEnabled is on. Call once at boot, after the OLED
+// and the trip log exist (the pairing splash is drawn on the OLED and every
+// event leaves a "BLE ..." line in the trip log). Does nothing when disabled.
+void bleInit();
+
+// Call once per main loop: byte pump in both directions, pairing splash,
+// deferred event log and the enable/disable switch. Non-blocking and cheap; it
+// never touches the radio and never waits for the BLE stack.
+void bleLoop();
+
+// Offer one frame heard on the radio to the Bluetooth host. Called by
+// tncOutputFrame(), the single "a frame goes to the host" call site. Drops it
+// (without counting a drop) when no host is connected or has not enabled
+// notifications: nobody is listening, that is not an error.
+void bleOutputFrameText(const char *textFrame);
+
+// Stop advertising, drop the link and disable the SoftDevice. Required before
+// System OFF or a soft reset (power.cpp): the sleep current and a clean reset
+// depend on the SoftDevice being down. Safe to call when Bluetooth never ran.
+void bleShutdown();
+
+// True while the SoftDevice is running (Bluetooth started and not shut down).
+// Other modules need it to pick the SoftDevice API for the peripherals the
+// stack reserves: the die temperature (TEMP), read in sensors.cpp, is one.
+bool bleSoftDeviceUp();
+
+// --- state / diagnostics (diag snapshot, OLED, reports) ---
+bool bleOn();              // stack started and usable
+bool bleAdvertising();     // advertising right now
+bool bleConnected();       // a host is connected
+bool bleHostReady();       // connected AND notifications on: frames can flow
+const char *bleAdvName();  // name in the advertising packet (contains the call)
+uint8_t bleStateCode();    // 0 off, 1 advertising, 2 connected, 3 host ready
+
+// Counters since boot (diag snapshot + trip log):
+//   framesIn   complete KISS frames accepted from the host (host -> radio)
+//   framesOut  complete KISS frames queued for the host (radio -> host)
+//   bytesOut   bytes really notified to the host
+//   dropped    frames lost because a host link could not take them
+uint32_t bleFramesIn();
+uint32_t bleFramesOut();
+uint32_t bleBytesOut();
+uint32_t bleFramesDropped();
+
+// Pairing: attempts seen (BLE_GAP_EVT_SEC_PARAMS_REQUEST), successes and
+// failures (BLE_GAP_EVT_AUTH_STATUS) and the raw BLE_GAP_SEC_STATUS_* of the
+// last one (-1 = none yet).
+uint32_t blePairRequests();
+uint32_t blePairOk();
+uint32_t blePairFail();
+int16_t bleLastPairStatus();
