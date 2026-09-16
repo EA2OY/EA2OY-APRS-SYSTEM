@@ -1499,19 +1499,19 @@ Estos son los nombres exactos, y **estos ocho son todos los que hay**:
 
 | Placa | Fichero | Ojo con |
 |---|---|---|
-| Faketec con HT-RA62 | `KachoSystem_v1.0alpha_b9_Faketec_HT-RA62_433.uf2` | — |
-| Faketec con E22P | `KachoSystem_v1.0alpha_b9_Faketec_E22P-433M30S.uf2` | Si grabas el otro, la potencia y el encendido del módulo no son los correctos |
+| Faketec con HT-RA62 | `KachoSystem_v1.0alpha_b13_Faketec_HT-RA62_433.uf2` | — |
+| Faketec con E22P | `KachoSystem_v1.0alpha_b13_Faketec_E22P-433M30S.uf2` | Si grabas el otro, la potencia y el encendido del módulo no son los correctos |
 | T-Echo **o T-Echo Plus** con cargador de arranque **versión 6** | `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2` | Es el último que hay para la versión 6: **no existe uno más nuevo** (ver abajo) |
-| T-Echo con cargador de arranque **versión 7** | `KachoSystem_v1.0alpha_b9_LilyGO_T-Echo_S140v7.uf2` | Si te equivocas, se pisan los últimos 4 KB del cargador y la radio deja de funcionar |
-| T-Echo **Plus** con cargador de arranque **versión 7** | `KachoSystem_v1.0alpha_b9_LilyGO_T-Echo-Plus_S140v7.uf2` | Es el que lleva los avisos de vibración y sonido |
+| T-Echo con cargador de arranque **versión 7** | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo_S140v7.uf2` | Si te equivocas, se pisan los últimos 4 KB del cargador y la radio deja de funcionar |
+| T-Echo **Plus** con cargador de arranque **versión 7** | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo-Plus_S140v7.uf2` | Es el que lleva los avisos de vibración y sonido |
 
 > **Los cuatro ficheros viejos siguen en la carpeta a propósito**, no son basura que se haya
 > olvidado: `KachoSystem_v1.0alpha_b3_Faketec_HT-RA62_433.uf2`,
 > `KachoSystem_v1.0alpha_b3_Faketec_E22P-433M30S.uf2`,
 > `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo-Plus.uf2` y
-> `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2`. Los tres primeros los han sustituido los `b9`
+> `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2`. Los tres primeros los han sustituido los `b13`
 > de arriba para esas mismas placas; **el cuarto, no**: es el que sigue valiendo para un T-Echo
-> con cargador **versión 6**, porque **no hay build `b9` para la versión 6**. Si tu T-Echo trae
+> con cargador **versión 6**, porque **no hay build `b13` para la versión 6**. Si tu T-Echo trae
 > la versión 6 y quieres lo último, hay que **actualizar antes el cargador de arranque** a la
 > versión 7, y eso no lo hace este proyecto.
 
