@@ -34,15 +34,48 @@ enum {
 struct DigiConfig {
   // station
   char callsign[16] = "NOCALL-11";   // uppercase
-  // Identificador de dispositivo (el "tocall": es el destino de TODAS nuestras
-  // tramas). Es lo que hace que aprs.fi diga "ESP32 LoRa iGate de Ricardo" en la
-  // casilla Dispositivo: APLRG1 es SU matricula, no la nuestra. Se puede dejar
-  // (compatibilidad total con el ecosistema LoRa) o poner una propia:
-  //   - rango experimental para proyectos no publicados: APZ??? (p. ej. APZFKT)
-  //   - si algun dia se publica el firmware, se pide matricula oficial en
-  //     github.com/aprsorg/aprs-deviceid y se cambia el valor por defecto.
-  // Vacio = se usa APLRG1 (respaldo).
-  char tocall[8] = "APLRG1";
+  // Identificador de dispositivo (el "tocall": es el destino AX.25 de TODAS nuestras
+  // tramas). Es lo que aprs.fi enseña en la casilla "Dispositivo".
+  //
+  // ★★★ EL TOCALL NO ES UN AJUSTE: ES UNA DECLARACION DEL FIRMWARE (2026-09-21) ★★★
+  //
+  // QUE ES: el destino AX.25 de TODAS las tramas del nodo. Es lo que aprs.fi y los mapas
+  // enseñan en la casilla "Dispositivo": identifica al FIRMWARE, no al dueño del aparato.
+  //
+  // ★ NO ES MODIFICABLE, Y ESO ES A PROPOSITO (peticion del operador, EA2OY):
+  //   - Hay UNA SOLA declaracion, aqui abajo (kKachoSystemTocall). Todo lo demas la lee.
+  //   - NO existe ya un campo `tocall` en DigiConfig, asi que no hay NADA que guardar en
+  //     la flash, ni NADA que el usuario pueda tocar.
+  //   - Se ignora si llega por el cable (`set tocall ...`), por el configurador web, por
+  //     la app o por cualquiera de los dos menus del aparato. El nodo manda SIEMPRE esta
+  //     matricula, tenga lo que tenga guardado de antes.
+  //   - Consecuencia buscada: **al grabar este firmware, el nodo queda con nuestra
+  //     matricula**, aunque venga de otro firmware o de una version anterior.
+  //
+  // POR QUE APL: el mapa que se usa en el norte de España (lora.ham-radio-op.net, que es
+  // APRS Track Direct) solo pinta estaciones cuyo tocall empieza por APL. Comprobado el
+  // 2026-09-21 consultando APRS-Ish desde el servidor español: en 150 km alrededor de
+  // Pamplona, todas las estaciones LoRa que ese mapa muestra llevan APL* (APLRG1, APLRT1,
+  // APLOX1, APLG01, APLRFD), y las de otros ecosistemas no salen.
+  // POR QUE "2OY": es el indicativo del autor dentro de la matricula; estaba libre (de las
+  // 42 entradas APL* de la base oficial, ninguna empieza por APL2). Descartadas: APZFKT (la
+  // F libre hoy, mas facil de chocar mañana) y APLETK (esa YA ES de DL5TKL, el firmware del
+  // T-Echo del que copiamos la secuencia de pantalla).
+  // ANTES PONIA APLRG1, Y ESTABA MAL: es la matricula de OTRO firmware (el ecosistema de
+  // Ricardo, CA2RXU), asi que nuestros nodos firmaban como si fueran suyos.
+  //
+  // UNA SOLA MATRICULA PARA TODO EL FIRMWARE, con todos sus montajes (T-Echo, Plus,
+  // Faketec, HT-RA62, E22P): lo manda el documento oficial de asignacion de
+  // aprs-deviceid ("do not request multiple device identifiers; use different symbols to
+  // identify the role of each station"). El papel de cada nodo se distingue con el SIMBOLO.
+  //
+  // PENDIENTE: pedir la asignacion oficial en github.com/aprsorg/aprs-deviceid
+  // (class: tracker o network, os: embedded, vendor: EA2OY).
+  //
+  // SI ALGUN DIA HAY QUE CAMBIARLO: se cambia ESTA linea, se recompila y se graba. No hay
+  // ninguna via por software, y es a proposito: asi no puede haber dos nodos del mismo
+  // firmware diciendo cosas distintas.
+  static constexpr const char *kKachoSystemTocall = "APL2OY";
   // Ruta de respaldo (compatibilidad). Las buenas son las tres de abajo.
   char path[32] = "WIDE1-1";
   // Ruta (saltos) POR MODO DE TRABAJO: se puede pedir distinto en cada uno y
@@ -202,11 +235,22 @@ struct DigiConfig {
 
   // Tracker (Phase C)
   int trackerIntervalSecs = 120;   // fixed interval (smart presets may override)
-  int trackerMinDistanceM = 0;     // "every X m" trigger (0 = off) / filter
+  // ★ UNIFICADO CON EL BOTON DE RECOMENDADOS DEL CONFIGURADOR (2026-09-21): antes era 0.
+  //   POR QUE: el plan de despliegue es que un nodo recien grabado salga YA listo, y el
+  //   configurador pone 150 m con el boton de valores recomendados. Si de fabrica fuera 0,
+  //   un nodo nuevo no tendria la misma configuracion que uno configurado con el boton, y
+  //   habria dos "de fabrica" distintos. Regla: LO DE FABRICA = LO RECOMENDADO.
+  //   Con un perfil activo (ver smartBeaconPreset) este valor no se usa: manda el del perfil.
+  int trackerMinDistanceM = 150;   // "every X m" trigger (0 = off) / filter
   // Minimum spacing between beacons triggered by distance or corner pegging.
   // Each SF12 frame occupies ~4 s of air, so this protects the channel.
   int trackerMinSpacingSecs = 30;  // 10..120
-  uint8_t smartBeaconPreset = 0;   // 0=off(fixed/digi) 1=human 2=bike 3=car
+  // ★ UNIFICADO CON EL BOTON DE RECOMENDADOS (2026-09-21): antes era 0 (ninguno), y asi un
+  //   nodo recien grabado NO tenia perfil activo: ni SSID de perfil, ni su icono, ni su
+  //   ritmo de baliza. El configurador recomienda 3 (coche) y ahora de fabrica tambien.
+  //   El perfil activo es lo que hace que la pantalla, el mapa y el aire digan lo mismo
+  //   (ver el comentario de profileSsid/profileSymbol mas abajo).
+  uint8_t smartBeaconPreset = 3;   // 0=off(fixed/digi) 1=human 2=bike 3=car
   bool sendAltitude = true;
   bool gpsEco = false;             // GPS duty-cycle when idle (default OFF)
   bool trackerSleep = false;       // timed sleep between beacons

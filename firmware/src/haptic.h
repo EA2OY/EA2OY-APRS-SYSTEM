@@ -3,7 +3,7 @@
 // PARA QUE EXISTE: avisos que NO se pueden ver. La pantalla de tinta electronica no se
 // ilumina y tarda 1,5 s por refresco, asi que hay cosas que solo se notan si el nodo vibra.
 //
-// ★ LOS AVISOS LOS DECIDIO EL OPERADOR (2026-09-15). Lista de avisos:
+// ★ LOS AVISOS LOS DECIDIO EL OPERADOR (2026-09-15). Ver `_memoria/PENDIENTE.md`:
 //     - al coger fijacion GPS (patron CORTO y con limite de repeticion: en el monte el GPS
 //       coge y pierde fix continuamente y no puede estar vibrando sin parar)
 //     - al tocar el boton CAPACITIVO (feedback: con la pantalla lenta no se sabe si conto)

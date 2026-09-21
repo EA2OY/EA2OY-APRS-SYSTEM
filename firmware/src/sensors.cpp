@@ -37,6 +37,11 @@
 // arrancaba y este es el unico cambio que el banco de pruebas (que si arranca) no tiene.
 #define WIRE_SENSORES Wire
 #include <nrf.h>
+// sd_temp_get(): la temperatura del chip se lee por el SoftDevice cuando esta arriba (TEMP
+// es un periferico suyo, ver readChipTempC). El porque, en ble_kiss.h.
+#include <nrf_soc.h>
+
+#include "ble_kiss.h"  // bleSoftDeviceIsp(): quien manda hoy sobre el periferico TEMP
 
 namespace {
 
@@ -69,12 +74,24 @@ uint8_t readChipId(uint8_t addr) {
 
 // nRF52 internal temperature sensor (TEMP peripheral): 0.25 °C per unit.
 // Reads the DIE, not the air (that is what the user offset compensates).
-// 2026-09-13 RESCATE: Bluetooth is out of the build, so the SoftDevice never
-// runs and TEMP is never reserved. The SoftDevice branch that used to be here
-// (sd_temp_get(), guarded by bleSoftDeviceUp()) is gone with it, along with the
-// nrf_soc.h include it needed: the raw register path below is now the only one,
-// and it is always valid because nothing else owns the TEMP peripheral.
+//
+// ★★ CON EL BLUETOOTH ARRANCADO HAY QUE LEERLO POR EL SOFTDEVICE (2026-09-17) ★★
+// POR QUE: TEMP esta en la lista de perifericos que el SoftDevice se reserva
+// (`__NRF_NVIC_SD_IRQS_0` en nrf_nvic.h: POWER_CLOCK, RADIO, RTC0, TIMER0, RNG, ECB,
+// CCM_AAR, TEMP, NVMC, SWI5). Con el stack arriba, escribir `NRF_TEMP->TASKS_START` a mano
+// no es que "no haga nada": es un acceso a un periferico protegido y puede acabar en falta.
+// La API del stack para esto es `sd_temp_get()`, y devuelve lo mismo (un cuarto de grado).
+// Esta rama ya existia y se quito el 2026-09-13 al sacar el Bluetooth del binario; vuelve
+// porque el Bluetooth vuelve. La condicion es el estado REAL del stack (`bleSoftDeviceIsp()`,
+// que se pone al arrancar `Bluefruit.begin()` y se quita en `bleShutdown()`), no el ajuste de
+// configuracion: entre que se pide encender y que arranca hay un trecho.
 float readChipTempC() {
+  if (bleSoftDeviceIsp()) {
+    int32_t t = 0;
+    if (sd_temp_get(&t) == 0) return (float)t * 0.25f;
+    // Si el stack lo rechaza no se cae nada: se sigue por el camino del registro, que a
+    // partir de aqui es el unico que queda.
+  }
   NRF_TEMP->TASKS_START = 1;
   uint32_t guard = 0;
   while (NRF_TEMP->EVENTS_DATARDY == 0 && guard++ < 2000000u) {

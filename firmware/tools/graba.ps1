@@ -21,7 +21,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$tools = $PSScriptRoot   # los ayudantes (hello_send.ps1) viven junto a este script
+$tools = "C:\Users\Jesus\Desktop\LoRa_APRS_iGate-main\Faketec_APRS_Igate_EA2OY\tools"
 
 if (-not (Test-Path $Uf2)) { Write-Error "no existe el .uf2: $Uf2"; exit 1 }
 $Uf2 = (Resolve-Path $Uf2).Path

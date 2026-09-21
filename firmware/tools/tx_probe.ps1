@@ -3,7 +3,7 @@
   Manda una secuencia de comandos al nodo y muestra las TRAMAS que salen al aire.
 .EXAMPLE
   .\tx_probe.ps1 -Port COM36 -Line "beacon","wx" -WaitMs 8000
-  .\tx_probe.ps1 -Port COM36 -Line "obj PRUEBA -30.00 -140.00 hola" -WaitMs 9000 -Out tramas.txt
+  .\tx_probe.ps1 -Port COM36 -Line "obj PRUEBA 42.80 -1.62 hola" -WaitMs 9000 -Out tramas.txt
 .NOTES
   Activa el modo diag (sin el, el nodo no publica las tramas), manda cada linea,
   captura los eventos {"diag":"tx"} y apaga el diag al terminar.

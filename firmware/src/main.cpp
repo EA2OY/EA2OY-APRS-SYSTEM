@@ -266,13 +266,58 @@ static void drainButton() { handleButton(); }
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  /* ★★★ LA ESPERA QUE HACE EL BANCO Y NOSOTROS NO (b48, 2026-09-17) ★★★
+     El unico firmware que ARRANCA el SoftDevice en esta placa (el banco de diagnostico,
+     `diag_ble`) hace esto antes de tocarlo:
+
+         Serial.begin(115200);
+         esperaCable(2500);        <-- ESPERA 2,5 SEGUNDOS
+
+     Y nosotros arrancabamos el Bluetooth inmediatamente. El SoftDevice **se reserva el
+     periferico POWER, que es el del USB**, y en esos primeros milisegundos el USB se esta
+     enumerando (llegan eventos de VBUS, TinyUSB levanta el pull-up...). Que el banco espere y
+     funcione, y nosotros no esperemos y nos caigamos, es la diferencia mas simple que queda
+     por probar. Si esta espera arregla el arranque, el arreglo es este; si no, se quita y se
+     sigue bisecando: no rompe nada. */
+  delay(2500);
   configSetDefaults(gConfig);
   const bool hayConfig = storeLoad(gConfig);
   aprsBindConfig(&gConfig);
   tncBindConfig(&gConfig);
   diagBindConfig(&gConfig);
   displayBindConfig(&gConfig);
+  // ★★ EL PROTOCOLO Y EL BLUETOOTH (2026-09-17) ★★
+  //   El protocolo se engancha aqui para que los bytes del Bluetooth puedan entrar en el
+  //   MISMO receptor de lineas que los del cable: el enlace Bluetooth escribe en ese objeto
+  //   desde ble_kiss.cpp, y este fichero es el unico que lo conoce (es un objeto global de
+  //   aqui). Sin este enganche, `bleLoop()` no tendria a quien dar los bytes del huesped.
+  configProtocolBind(&gProtocol);
+
+  /* ★★★ EL BLUETOOTH SE ARRANCA AQUI, LO PRIMERO DE TODO (2026-09-17, b35) ★★★
+     Y esto es un ARREGLO, no un capricho de orden. El SoftDevice **se reserva los niveles de
+     prioridad de interrupcion 0, 1 y 4** (`nrf_nvic.h`): si al llamar a `sd_softdevice_enable()`
+     hay UNA interrupcion habilitada con uno de esos niveles, la llamada falla con
+     `NRF_ERROR_SDM_INCORRECT_INTERRUPT_CONFIGURATION` (`0x1001`). Y como el `HardFault_Handler`
+     de este core **reinicia** (`cores\nRF5\utility\debug.cpp`), un fallo ahi se ve como un
+     **bucle de reinicios** con el USB montando y desmontando — que es justo lo medido en la
+     placa con el b25, el b32 y el b33.
+
+     Antes se arrancaba al FINAL del setup, con el reloj, los botones, el `Wire`, la pantalla,
+     la radio (RadioLib) y el USB ya inicializados y con sus interrupciones puestas. Ahora se
+     arranca aqui: **antes de `powerInit()` y de todo lo demas**, que es la unica diferencia
+     funcional que le queda al firmware que SI hace funcionar el Bluetooth en este hardware
+     (el del T-Echo del proyecto `cfr34k/t-echo-lora-aprs`: alli el stack sube antes de que la
+     aplicacion encienda sus perifericos).
+
+     Lo que NO cambia: si `bleEnabled` esta apagado no se toca el SoftDevice, la sonda estricta
+     sigue decidiendo si se puede intentar, y el USB lo devuelve el propio arranque del stack
+     (`usb_softdevice_post_enable`) en la linea siguiente a habilitarlo. */
+  // 2026-09-21: AQUI ESTABA `bleLinkInit()` (el arranque del enlace Bluetooth). Se ha
+  // QUITADO DE ESTE REPOSITORIO a proposito, por decision del operador: el Bluetooth
+  // rompia el funcionamiento del nodo. Los ficheros del enlace (ble_kiss.cpp/.h) NO
+  // estan en el arbol publicado: se quedan con extension .off, que es como ya se
+  // publico la version probada. O sea: aqui no hay NADA de Bluetooth que enlazar ni
+  // que se pueda encender por error. Si algun dia vuelve, se revierte esto.
 
   // ★★ EL SALUDO DEL ARRANQUE, DESPUES DE LEER LA CONFIGURACION (2026-09-16) ★★
   //   Antes salia ANTES de leer la configuracion, asi que no habia forma de saber si el
@@ -345,11 +390,33 @@ void setup() {
 flogLine("EVT boot v%s %s mode=%u", APP_VERSION_STR, APP_BUILD_NUM,
            (unsigned)gConfig.mode);
 
-  // 2026-09-13 RESCATE: Bluetooth (ble_kiss.cpp/.h) has been taken OUT OF THE
-  // BUILD -- the files are renamed to *.off, so the compiler and the linker
-  // never see them and no Bluetooth/SoftDevice code can run. bleEnabled in the
-  // stored config is now an inert value: nothing reads it.
-  // (Before that, Bluetooth used to start here, last in setup().)
+  // ★★ BLUETOOTH: EL SEGUNDO PUERTO SERIE DEL NODO (2026-09-17) ★★
+  //
+  // POR QUE AQUI, AL FINAL: el aviso del PIN de emparejamiento se pinta en la PANTALLA, asi
+  // que la pantalla tiene que estar lista antes; y cada suceso del enlace deja una linea
+  // "BLE ..." en el registro de viaje, asi que el registro tambien. Es el mismo sitio en el
+  // que arrancaba antes de apagarse (2026-09-13).
+  //
+  // QUE HACE Y QUE NO:
+  //   - NO se arranca nada si `cfg.bleEnabled` esta apagado: ni se toca el SoftDevice. El
+  //     ajuste dejaba de ser inerte aqui (antes se guardaba y no lo leia nadie).
+  //   - Si arranca, el nodo se anuncia como "Kacho APRS <indicativo>" y el huesped que se
+  //     conecte habla EXACTAMENTE el mismo protocolo que por el cable (JSON + CLI), porque
+  //     sus bytes entran en el mismo receptor de lineas.
+  //   - El Bluetooth NO toca la radio ni el modo del TNC: encenderlo no silencia las balizas.
+  //
+  // LA HISTORIA, EN UNA LINEA (el porque de las dudas al leer esto): el Bluetooth se apago
+  // porque el nodo se quedaba bloqueado. ★ CORREGIDO EL 2026-09-17: la causa NO era el codigo
+  // de Bluetooth ni un chip averiado — la sonda leia la ficha del SoftDevice 0x1000 bytes mas
+  // abajo (`0x200C` en vez de `0x300C`), y lo que hay ahi es CODIGO del SoftDevice. El `fwid`
+  // real de esta placa es `0x0100` y la placa tiene un S140 7.2.0 valido. Lo que sigue abierto
+  // es POR QUE el arranque del stack se cuelga (el nodo reinicia en bucle): la hipotesis
+  // principal es esta, la prioridad de una interrupcion ya configurada (`0x1001`), y por eso
+  // el arranque se ha subido AL PRINCIPIO del setup (ver el bloque de arriba, junto a
+  // `bleBindConfig`). El detalle completo, en `docs\SESION_20260917_BLUETOOTH.md` y en
+  // `docs\INFORME_BLUETOOTH_ARRANQUE.md`.
+  //
+  // Y el arranque del Bluetooth NO se hace aqui: se hace al principio (ver arriba).
 
   displaySplash();  // 4 s boot splash (non-blocking)
 
@@ -590,8 +657,17 @@ void loop() {
 
   radioLoop();
   diagLoop();
-  // (Bluetooth byte pump + pairing splash used to run here: bleLoop(). It is
-  // out of the build for now, see the note in setup().)
+  // ★★ EL BOMBEO DEL BLUETOOTH (2026-09-17) ★★
+  //   Aqui y no antes: `bleLoop()` empuja al receptor de lineas lo que haya escrito el
+  //   huesped, y esa misma vuelta del bucle (un poco mas abajo, en `gProtocol.atiende()`) es
+  //   la que lo ejecuta. Se hace DESPUES de `displayRefresh()` a proposito: si el panel acaba
+  //   de tardar 2 s pintando, esto es lo primero que se cobra en cuanto el panel queda libre.
+  //   No bloquea: saca como mucho un aviso por vuelta.
+  //   Y se cobra EN EL ACTO lo que el huesped haya escrito: `atiende()` es el unico sitio que
+  //   ejecuta un comando. Sin esta linea, una orden por Bluetooth se quedaria en el anillo
+  //   hasta la vuelta siguiente (y en modo KISS, que salta el `atiende()` del final del
+  //   bucle, no se cobraria nunca: la app se quedaria muda por el aire).
+  gProtocol.atiende();
   // Resending an unacknowledged message is a packet the node decides to send on
   // its own, so the same KISS rule applies (see tncHostDriven()).
   if (!tncHostDriven()) aprsMsgTick(gConfig, now);

@@ -249,6 +249,19 @@ const char *radioModuleName() {
 #endif
 }
 
+// Placa de este build. Las tres que se fabrican, y el porque en radio.h.
+// OJO: el T-Echo normal y el Plus comparten electronica de bateria (LiPo 1S), asi que para
+// lo que esto sirve (los umbrales de bateria) son la misma cosa.
+const char *boardName() {
+#if defined(FAKETEC_BOARD_TECHO)
+  return "T-Echo";
+#elif defined(FAKETEC_RADIO_E22P)
+  return "Faketec E22P";
+#else
+  return "Faketec HT-RA62";
+#endif
+}
+
 uint32_t radioRxCount() { return gRxCount; }
 uint32_t radioTxCount() { return gTxCount; }
 uint32_t radioLastTxMs() { return gLastSentMs; }

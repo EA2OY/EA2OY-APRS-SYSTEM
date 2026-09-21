@@ -279,7 +279,15 @@ $obsoletos = @(
   @("doble toque 400 ms (el real es 800 ms)", 'doble[^\n]{0,40}400\s*ms'),
   @("clave trackerMinSpacing (la real es trackerMinSpacingSecs)", 'trackerMinSpacing(?!Secs)'),
   @("clave chipTempOffset (la real es chipTempOffsetC)", 'chipTempOffset(?!C)'),
-  @("ble_kiss.cpp/.h sin .off (hoy estan apagados)", 'ble_kiss\.(cpp|h)(?!\.off)'),
+  # ★ CORREGIDO EL 2026-09-17: esta entrada buscaba `ble_kiss.cpp`/`ble_kiss.h` "sin .off".
+  #   El operador ordeno reactivar el Bluetooth ese dia, asi que los ficheros volvieron a
+  #   llamarse `ble_kiss.cpp` y `ble_kiss.h` A PROPOSITO y el verificador fallaba por hacer
+  #   justo lo que se le pide. Lo que sigue siendo un dato viejo es creerse que el Bluetooth
+  #   esta APAGADO: eso es lo que se busca ahora, y la misma linea vale para el resto de la
+  #   familia (los `.off` ya no existen; si alguien los vuelve a crear, la huella esta en el
+  #   arbol con `git log`).
+  @("dice que el Bluetooth sigue escrito y apagado",
+    'ble_kiss\.(cpp|h)\.off|Bluetooth[^\n]{0,40}(escrito y apagado|fuera de la compilaci)'),
   @("'Pre-alpha' / 'no hay codigo' (el firmware esta hecho)", 'Pre-alpha|no code yet'),
   @("marca de trabajo en curso dejada en un documento", 'POR REVISAR|POR DECIDIR|TODO:')
 )

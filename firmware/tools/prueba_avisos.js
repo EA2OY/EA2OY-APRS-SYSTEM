@@ -55,7 +55,7 @@ const updateNotes = new Function("collectConfig",
 
 /* --- configuracion base: un nodo bien puesto (no debe avisar de nada) --- */
 const BIEN = {
-  callsign: "EA2ABC-7", mode: 0, latitude: -30.00, longitude: -140.00,
+  callsign: "EA2ABC-7", mode: 0, latitude: 42.8, longitude: -1.6,
   frequency: 433775000, spreadingFactor: 12, signalBandwidth: 125,
   pathDigi: "WIDE1-1", pathTracker: "WIDE1-1,WIDE2-1", pathBoth: "WIDE1-1,WIDE2-1",
   posAmbiguity: 0, beaconInterval: 15, trackerSleep: false,

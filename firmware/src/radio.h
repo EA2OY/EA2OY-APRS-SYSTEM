@@ -24,6 +24,18 @@ const char *radioState();  // "OFF" | "RX" | "TX" | "ERR"
 // (Ebyte with PA, 12 dBm of drive -> ~1 W of output). The web configurator
 // uses it to warn about the power limit.
 const char *radioModuleName();
+
+// ★ PLACA de este build, para que el configurador NO TENGA QUE ADIVINARLA (2026-09-21).
+//   Devuelve uno de estos tres, que son los que se fabrican:
+//     "T-Echo"          -> LilyGO T-Echo y T-Echo Plus (los dos, misma electronica de
+//                          bateria: celda LiPo 1S)
+//     "Faketec HT-RA62" -> Faketec / ProMicro con SX1262
+//     "Faketec E22P"    -> Faketec / ProMicro con E22P-433M30S (lleva booster MT3608)
+//   PARA QUE SIRVE: los umbrales de bateria (corte y despertar) NO son los mismos en las
+//   tres, y el configurador web no tenia forma de saber cual tenia delante: recomendaba
+//   los de la Faketec a todo el mundo, y en un T-Echo eso apaga el nodo con la bateria a
+//   media carga (ver config.h, sleepCutMv). Con esto, el configurador propone los suyos.
+const char *boardName();
 uint32_t radioRxCount();
 uint32_t radioTxCount();
 // millis() of the last successful TX (0 = never). The LoRa send is blocking,

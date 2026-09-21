@@ -13,6 +13,7 @@
 
 #include "aprs.h"
 #include "ax25.h"
+#include "ble_kiss.h"   // bleOutputFrameText(): el Bluetooth es el segundo huesped
 #include "diag.h"
 #include "flog.h"
 #include "kiss.h"
@@ -161,9 +162,14 @@ void tncUsbPoll() {
 void tncOutputFrame(const char *frame) {
   if (frame == nullptr || frame[0] == '\0') return;
 
-  // 2026-09-13 RESCATE: here went bleOutputFrameText(frame), which offered every
-  // frame heard on the radio to the Bluetooth host link. Bluetooth is out of the
-  // build, so this is again the single "a frame goes to the host" path: USB.
+  // ★★ UNA TRAMA OIDA POR LA RADIO VA A **TODOS** LOS HUESPEDES QUE ESCUCHEN (2026-09-17) ★★
+  //   El Bluetooth es un SEGUNDO puerto serie del nodo, asi que la trama se le ofrece tambien
+  //   a el, en el MISMO formato que usa el cable (lo decide `bleOutputFrameText()`, mirando el
+  //   selector del TNC: KISS binario o texto TNC2). Si no hay nadie escuchando no se cuenta
+  //   como perdida: no es un error, es que no hay huesped.
+  //   ★ OJO: esto NO cambia el comportamiento del cable. Si el Bluetooth esta apagado (el
+  //     valor de fabrica) la funcion sale en la primera linea, como si no existiera.
+  bleOutputFrameText(frame);
 
   if (!tncActive()) return;
 

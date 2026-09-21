@@ -12,6 +12,7 @@
 #include "display.h"
 #include "gps.h"
 #include "power.h"
+#include "protocol.h"   // protocolHostOut(): el diagnostico sale por donde entro la orden
 #include "radio.h"
 #include "sensors.h"
 #include "tnc.h"
@@ -30,6 +31,22 @@ void jsonEscapePrint(const char *s) {
     if (c == '"' || c == '\\') Serial.print('\\');
     if ((uint8_t)c >= 0x20) Serial.print(c);
   }
+}
+
+// La misma limpieza, pero a un buzon: hace falta porque ahora la nota sale ENTERA por una
+// sola puerta (protocolHostOut), y esa puerta no puede ir imprimiendo trozos.
+// Limpieza de una cadena para meterla en una linea JSON. Antes se imprimia trozo a trozo
+// directamente al puerto; ahora las lineas de diagnostico salen ENTERAS por una sola puerta
+// (protocolHostOut) para que puedan ir por el cable o por el aire, y esa puerta no puede ir
+// imprimiendo trozos: por eso se compone en un buzon.
+void jsonEscape(const char *s, char *out, size_t n) {
+  size_t i = 0;
+  for (const char *p = s; p && *p && i + 2 < n; p++) {
+    const char c = *p;
+    if (c == '"' || c == '\\') out[i++] = '\\';
+    if ((uint8_t)c >= 0x20) out[i++] = c;
+  }
+  out[i] = '\0';
 }
 
 }  // namespace
@@ -54,37 +71,41 @@ bool diagTrazaArranque() { return !tncActive(); }
 
 void diagRxFrame(const char *from, const char *info, float rssi, float snr) {
   if (!diagStreaming()) return;
-  Serial.print(F("{\"diag\":\"rx\",\"ms\":"));
-  Serial.print(millis());
-  Serial.print(F(",\"from\":\""));
-  jsonEscapePrint(from);
-  Serial.print(F("\",\"rssi\":"));
-  Serial.print(rssi, 0);
-  Serial.print(F(",\"snr\":"));
-  Serial.print(snr, 1);
-  Serial.print(F(",\"info\":\""));
-  jsonEscapePrint(info);
-  Serial.println(F("\"}"));
+  // Las tres lineas de diagnostico salen por la MISMA puerta que las respuestas del protocolo
+  // (ver diagNote): por el cable si la orden vino del cable, por el aire si vino del Bluetooth.
+  char eFrom[64], eInfo[160];
+  jsonEscape(from, eFrom, sizeof(eFrom));
+  jsonEscape(info, eInfo, sizeof(eInfo));
+  char b[288];
+  snprintf(b, sizeof(b),
+           "{\"diag\":\"rx\",\"ms\":%lu,\"from\":\"%s\",\"rssi\":%.0f,\"snr\":%.1f,"
+           "\"info\":\"%s\"}",
+           (unsigned long)millis(), eFrom, (double)rssi, (double)snr, eInfo);
+  protocolHostOut(b);
 }
 
 void diagTxFrame(const char *frame, size_t len, int code) {
   if (!diagStreaming()) return;
-  Serial.print(F("{\"diag\":\"tx\",\"ms\":"));
-  Serial.print(millis());
-  Serial.print(F(",\"code\":"));
-  Serial.print(code);
-  Serial.print(F(",\"len\":"));
-  Serial.print((unsigned)len);
-  Serial.print(F(",\"frame\":\""));
-  jsonEscapePrint(frame);
-  Serial.println(F("\"}"));
+  char eFrame[200];
+  jsonEscape(frame, eFrame, sizeof(eFrame));
+  char b[256];
+  snprintf(b, sizeof(b),
+           "{\"diag\":\"tx\",\"ms\":%lu,\"code\":%d,\"len\":%u,\"frame\":\"%s\"}",
+           (unsigned long)millis(), code, (unsigned)len, eFrame);
+  protocolHostOut(b);
 }
 
 void diagNote(const char *what) {
   if (!diagStreaming()) return;
-  Serial.print(F("{\"diag\":\"note\",\"what\":\""));
-  jsonEscapePrint(what);
-  Serial.println(F("\"}"));
+  // ★ Sale por la MISMA puerta que las respuestas del protocolo (protocolHostOut), que manda
+  //   por donde vino la ultima orden: si el diagnostico se encendio desde la app por
+  //   Bluetooth, las notas van por el aire; si se encendio por el cable, por el cable. Nunca
+  //   por los dos a la vez, que romperia la regla de "una respuesta por linea".
+  char esc[128];
+  jsonEscape(what, esc, sizeof(esc));
+  char b[176];
+  snprintf(b, sizeof(b), "{\"diag\":\"note\",\"what\":\"%s\"}", esc);
+  protocolHostOut(b);
 }
 
 namespace {
@@ -169,8 +190,11 @@ void emitSnapshot() {
   ui["on"] = displayIsOn();
   ui["menu"] = menuIsOpen();
 
-  serializeJson(d, Serial);
-  Serial.println();
+  // ★ Sale por la misma puerta que las respuestas: si el diagnostico se encendio desde la app
+  //   por Bluetooth, las muestras van por el aire; si se encendio por el cable, por el cable.
+  String out;
+  serializeJson(d, out);
+  protocolHostOut(out.c_str());
 }
 
 }  // namespace

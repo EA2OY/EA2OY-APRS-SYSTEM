@@ -197,21 +197,12 @@ bool configFromJson(DigiConfig &cfg, JsonVariantConst in, String &errMsg) {
     keepPrintableAscii(buf);
     strncpy(next.sleepMsg, buf, sizeof(next.sleepMsg) - 1);
   }
-  // Identificador de dispositivo (tocall): mayusculas, alfanumerico, max 6.
+  // ★ EL TOCALL YA NO SE LEE (2026-09-21): dejo de ser un ajuste y paso a ser una
+  //   declaracion del firmware (DigiConfig::kKachoSystemTocall). Si llega por aqui
+  //   (consola `set tocall ...`, configurador, app o menu del aparato) SE IGNORA A
+  //   PROPOSITO: el nodo manda siempre nuestra matricula, venga de donde venga el paquete.
+  //   Antes esto validaba el valor (mayusculas, alfanumerico, max 6) y lo guardaba.
   ignoraSiNoEsTexto(in["tocall"], "tocall");
-  if (in["tocall"].is<const char *>()) {
-    char t[8];
-    strncpy(t, in["tocall"] | "", sizeof(t) - 1);
-    t[sizeof(t) - 1] = '\0';
-    size_t n = 0;
-    for (char *p = t; *p != '\0' && n < 6; p++) {
-      const char c = (char)toupper((unsigned char)*p);
-      if (isalnum((unsigned char)c)) t[n++] = c;
-    }
-    t[n] = '\0';
-    if (n == 0) strncpy(t, "APLRG1", sizeof(t) - 1);  // respaldo del ecosistema
-    strncpy(next.tocall, t, sizeof(next.tocall) - 1);
-  }
   // Una ruta por modo de trabajo (repetidor / rastreador / ambos).
   struct { const char *key; char *dst; size_t len; } paths[] = {
       {"pathDigi", next.pathDigi, sizeof(next.pathDigi)},
@@ -686,7 +677,11 @@ bool configFromJson(DigiConfig &cfg, JsonVariantConst in, String &errMsg) {
 
 void configToJson(const DigiConfig &cfg, JsonObject o) {
   o["callsign"] = cfg.callsign;
-  o["tocall"] = cfg.tocall;
+  // ★ El tocall se PUBLICA, pero no se guarda ni se acepta (2026-09-21): sale siempre la
+  //   matricula declarada por el firmware. Asi quien pregunte por el cable (configurador,
+  //   app o `get tocall`) ve lo que el nodo manda DE VERDAD, y no puede fiarse de un valor
+  //   viejo que hubiera quedado en la flash.
+  o["tocall"] = DigiConfig::kKachoSystemTocall;
   o["path"] = cfg.path;
   o["pathDigi"] = cfg.pathDigi;
   o["pathTracker"] = cfg.pathTracker;

@@ -25,14 +25,14 @@
  * Uso:
  *   node tools/aprsis_watch.js
  *   node tools/aprsis_watch.js --secs 300 --grep EA2OY
- *   node tools/aprsis_watch.js --filter "r/-30.00/-140.00/80"
+ *   node tools/aprsis_watch.js --filter "r/42.83/-1.64/80"
  *
  * Opciones:
  *   --secs N      segundos a escuchar (por defecto 180)
  *   --server H    servidor APRS-IS (por defecto euro.aprs2.net)
  *   --port N      puerto (por defecto 14580 = filtros definidos por el usuario)
  *   --call C      indicativo de login, solo para identificarse (EA2OY-7)
- *   --filter F    filtro APRS-IS (por defecto r/-30.00/-140.00/60 -> 60 km)
+ *   --filter F    filtro APRS-IS (por defecto r/42.83/-1.64/60 -> 60 km)
  *   --grep S      mostrar solo lineas que contengan S (se puede repetir)
  *   --out FILE    guardar todo en un fichero (por defecto logs/aprsis_....log)
  *   --raw         mostrar tambien las lineas de control del servidor (#)
@@ -89,7 +89,7 @@ const anonimo = argv.includes('--anonimo') || argv.includes('--anonymous');
 // entero sin usar el indicativo ni el passcode de nadie.
 const port = parseInt(opt('port', anonimo ? '10152' : '14580'), 10) ||
              (anonimo ? 10152 : 14580);
-const filter = String(opt('filter', 'r/-30.00/-140.00/60'));
+const filter = String(opt('filter', 'r/42.83/-1.64/60'));
 const greps = optAll('grep').map((s) => s.toUpperCase());
 const showRaw = argv.includes('--raw');
 const quiet = argv.includes('--quiet');

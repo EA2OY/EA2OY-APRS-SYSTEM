@@ -1,7 +1,8 @@
 // aprs.h — APRS-LoRa position beacon (next milestone after radio-blink)
 // Frame format interoperable with the CA2RXU ecosystem: LoRa payload =
-// 0x3C 0xFF 0x01 + ASCII AX25 UI text "SRC>APLRG1[,path]:!DDMM.mmN/DDDMM.mmE<sym>"
-// (same as CA2RXU lora_utils.cpp:229 and cfr34k aprs_build_frame).
+// 0x3C 0xFF 0x01 + ASCII AX25 UI text "SRC>APL2OY[,path]:!DDMM.mmN/DDDMM.mmE<sym>"
+// (same as CA2RXU lora_utils.cpp:229 and cfr34k aprs_build_frame; el destino es nuestra
+//  matricula APL2OY, ver el comentario de DigiConfig::tocall).
 // License: GPL-3.0
 
 #pragma once

@@ -35,7 +35,8 @@
 
 namespace {
 
-constexpr const char *kDestFallback = "APLRG1";  // CA2RXU ecosystem marker
+// (aqui vivia `kDestFallback = "APLRG1"`: se quito el 2026-09-21, cuando el tocall dejo
+//  de ser configurable. El valor unico esta en DigiConfig::kKachoSystemTocall, config.h.)
 
 // Automatic beacons stay quiet while the KISS host drives the node (operator
 // decision: the app commands, see tncHostDriven() in main.cpp). This second gate
@@ -48,11 +49,18 @@ constexpr const char *kDestFallback = "APLRG1";  // CA2RXU ecosystem marker
 bool autoBeaconAllowed() { return !tncKissActive() || tncKissPaused(); }
 
 // Identificador de dispositivo que llevan TODAS nuestras tramas (el "tocall",
-// campo de destino AX.25). Es lo que aprs.fi enseña en "Dispositivo": con
-// APLRG1 dice "ESP32 LoRa iGate de Ricardo" (su matrícula, no la nuestra).
-// Configurable: ver el comentario de DigiConfig::tocall.
+// campo de destino AX.25). Es lo que aprs.fi enseña en "Dispositivo".
+//
+// ★★ ESTE VALOR NO VIENE DE LA CONFIGURACION (2026-09-21) ★★
+//   Es una declaracion del firmware: se manda SIEMPRE la matricula de Kacho System,
+//   aunque el nodo tenga otra guardada de una version anterior, y aunque alguien
+//   intente cambiarla por el cable o por los menus. El porque y el detalle, en el
+//   comentario de DigiConfig::kKachoSystemTocall (config.h).
+//   La firma conserva el parametro `cfg` porque quien llama ya lo tiene a mano y asi
+//   no hay que tocar los seis sitios que la usan; no se lee nada de el.
 const char *destOf(const DigiConfig &cfg) {
-  return (cfg.tocall[0] != '\0') ? cfg.tocall : kDestFallback;
+  (void)cfg;
+  return DigiConfig::kKachoSystemTocall;
 }
 constexpr uint8_t kHeardSize = 5;         // heard-stations ring (Phase E)
 
@@ -277,7 +285,7 @@ String buildDigiPath(const DigiConfig &cfg, const String &path) {
   // ("¿hay cualquier asterisco?"). La rama de WIDE2 **no miraba NADA**, asi que un paquete
   // ya repetido por nosotros entraba por ahi y se repetia OTRA VEZ, metiendo el indicativo
   // dos veces en el path. Visto en el aire el 2026-09-15:
-  //     N0CALL-3>APLRG1,N0CALL-9,N0CALL-9*:@151549z...
+  //     N0CALL-3>APL2OY,N0CALL-9,N0CALL-9*:@151549z...
   // Pasa IGUAL en modo repetidor solo (mode 0) y en digi+tracker (mode 2): el fallo no
   // depende del modo de trabajo, solo de digiMode, que es quien elige las ramas. Poniendolo
   // AQUI, al principio, quedan cubiertas las dos ramas y cualquier otra que se anada.
@@ -659,7 +667,7 @@ bool handleRemoteMessage(DigiConfig &cfg, const String &sender,
   // Remote control (manager ACL + remoteEnabled): text from a manager IS a
   // command, and its reply is the answer.
   if (cfg.remoteEnabled && isManager(cfg, sender)) {
-    String reply = cliExecute(cfg, body.c_str(), true);
+    String reply = cliExecuteRemoto(cfg, body.c_str());
     if (reply.length() > 0) {
       flogLine("RX %s CMD %s", sender.c_str(), body.c_str());
       remoteReply(cfg, sender, reply);

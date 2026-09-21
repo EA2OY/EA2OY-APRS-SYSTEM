@@ -10,7 +10,7 @@
 //   2026-09-11 14:23:45 TX TRK -29.99587,-140.023517 88.0km/h 210deg 1200m 111b ok D
 //   14:23:45 TX TRK ...                       (sin fecha: GPS sin dia)
 //   2026-09-11 14:23:50 RX EA2OY-7 Bcn rssi-11 snr-7.8
-//   2026-09-11 14:23:52 DG EA2XXX-9 -> EA2OY-10* rssi-95 snr-3.2
+//   2026-09-11 14:23:52 DG EA2KW-9 -> EA2OY-10* rssi-95 snr-3.2
 // License: GPL-3.0
 
 const fs = require("fs");

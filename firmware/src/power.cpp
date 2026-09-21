@@ -17,6 +17,7 @@
 // que si son correctos en las dos placas.
 #include "pins_board.h"   // BATTERY_LPCOMP_AIN y BATTERY_DIVIDER segun la placa
 #include "aprs.h"
+#include "ble_kiss.h"   // bleShutdown(): el SoftDevice TIENE que estar abajo para dormir
 #include "display.h"
 #include "flog.h"
 #include "gps.h"
@@ -137,9 +138,17 @@ bool armLpcompWake(uint16_t wakeMv) {
 // Serial1 causes wake problems on ProMicro), radio sleep over SPI before
 // SPI.end(), OLED off while I2C is still alive, then buses/Serial and rail.
 void quiesceForSleep() {
-  // 2026-09-13 RESCATE: here went bleShutdown() (stop advertising, drop the link
-  // and disable the SoftDevice). Bluetooth is out of the build now, so there is
-  // no SoftDevice to bring down and nothing to release before System OFF.
+  // ★★ EL BLUETOOTH SE APAGA AQUI, Y ES LO PRIMERO (2026-09-17) ★★
+  //   Aqui iba `bleShutdown()` y se quito el 2026-09-13, cuando el Bluetooth salio de la
+  //   compilacion. Vuelve a ir, y va lo PRIMERO por dos motivos que importan:
+  //     1) `bleShutdown()` deja de anunciar, echa al huesped y APAGA el SoftDevice. Con el
+  //        SoftDevice arriba la radio y el LFCLK se quedan encendidos, y el consumo del sueno
+  //        no seria el que suponen las cuentas de la bateria (System OFF se escribe a mano
+  //        aqui abajo, y el SoftDevice no se entera de nada).
+  //     2) `rtcSleepBlocks()` duerme con __WFE esperando una interrupcion del RTC2: con el
+  //        stack de Bluetooth y sus tasks de FreeRTOS por medio, ese sueno no seria tranquilo.
+  //   Se llama siempre, tambien cuando el Bluetooth nunca arranco: la funcion se sale sola.
+  bleShutdown();
   gpsPower(false);
   pinMode(PIN_GPS_EN, OUTPUT);
   digitalWrite(PIN_GPS_EN, LOW);

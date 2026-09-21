@@ -722,7 +722,7 @@ void statusPill() {
 //      DEBAJO DE LA PASTILLA en cuanto se silenciara el nodo. Por eso el limite es
 //      el peor de los cuatro.
 // Con esos tres numeros el icono se pinta SOLO si `xIcono + 8 <= kPastillaRX0Min`
-// (90). Con indicativos normales ("EA2XXX-7 B" mide 50 px -> x1 = 60, icono en
+// (90). Con indicativos normales ("EA2KR-3 B" mide 50 px -> x1 = 60, icono en
 // x=66..73) sobra sitio. Solo si el indicativo es tan largo que su pastilla llega
 // a x=76 (texto de 66 px, unos 10-11 caracteres) el hueco se queda sin los 8 px
 // del icono y ese refresco sale SIN icono: se sacrifica el icono, nunca el

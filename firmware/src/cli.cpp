@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "aprs.h"
+#include "ble_kiss.h"   // bleResumen() para el comando de taller `ble`
 #include "diag.h"
 #include "display.h"
 #include "flog.h"
@@ -27,6 +28,34 @@
 #include "tracker.h"
 
 namespace {
+
+/* ★★ LA SALIDA DE TEXTO LARGO (el registro de viaje), POR DONDE VINO LA ORDEN (2026-09-17) ★★
+   `flogDump()` y `flogStats()` escriben en un `Stream`, y hasta hoy ese Stream era siempre
+   `Serial`: por Bluetooth el volcado del registro se habria ido por el cable. Este adaptador
+   lo manda por la MISMA puerta que las respuestas (protocolHostWrite), que ya sabe elegir
+   entre el cable y el aire mirando el origen de la orden que se esta atendiendo. */
+class SalidaHost : public Stream {
+ public:
+  size_t write(uint8_t b) override { return write(&b, 1); }
+  size_t write(const uint8_t *buf, size_t n) override {
+    if (buf == nullptr || n == 0) return 0;
+    protocolHostWrite((const char *)buf, n);
+    return n;
+  }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override { protocolFlushSalida(); }
+};
+
+SalidaHost gSalidaHost;
+Stream &hostStream(CliOrigen origen) {
+  // El unico `Stream` que sabe salir por los dos sitios. El parametro se queda para que se
+  // lea en el sitio de llamada POR DONDE va el volcado (y para poder cambiarlo sin tocar
+  // todas las llamadas si algun dia hiciera falta).
+  (void)origen;
+  return gSalidaHost;
+}
 
 void cmdPing(const DigiConfig &cfg, String &out) {
   char b[180];
@@ -165,25 +194,26 @@ bool typedSet(DigiConfig &cfg, const String &key, const String &val,
   return configFromJson(cfg, doc["config"].as<JsonObjectConst>(), errOut);
 }
 
-String helpText(bool viaRemote) {
-  if (viaRemote) {
+String helpText(CliOrigen origen) {
+  // Por radio solo se listan los comandos que CABEN y que no inundan el canal: el texto
+  // entero son ~1 KB y por radio eso es un mensaje larguisimo. Por el cable y por Bluetooth
+  // se lista todo igual, porque son el mismo puerto visto de dos maneras.
+  if (origen == CliOrigen::Rf) {
     return "CMDS: ping status bat rxlog | set <k> <v> | mute unmute beacon | "
            "reboot/reset confirm (reinicio) | factory_reset confirm (fabrica) | help";
   }
-  return "CMDS:\nping | status | bat | reset_reason | rxlog | diag | usb\n"
+  return "CMDS:\nping | status | bat | reset_reason | rxlog | diag | usb | ble\n"
          "set <clave> <valor> | mute | unmute | beacon | wx | trkbeacon\n"
          "msg [destino texto] | bul [0-9] <texto> | obj <nombre> <lat> <lon> [texto]\n"
          "objkill <nombre> | q <consulta APRS> | telemetry [meta]\n"
-         "rxs <de> <para> <texto> (simula una recibida, solo USB)\n"
-         "battest <mV> (aviso de bateria baja, solo USB)\n"
-         "i2cscan (escaneo del bus I2C, solo USB)\n"
-         "vibra [0..123] (motor haptico del Plus, solo USB)\n"
-         "tono (melodia de bateria baja, solo USB)\n"
+         "rxs <de> <para> <texto> (simula una recibida: cable o Bluetooth)\n"
+         "battest <mV> | i2cscan | vibra [0..123] | tono  (cable o Bluetooth)\n"
          "log dump | log stats | log clear | log on|off | gps info|send|coldstart\n"
          "reboot confirm | reset confirm (reinicio suave, NO borra nada)\n"
          "factory_reset confirm (borra la config; conserva callsign+managers+remote)\n"
-         "wipe confirm (USB only) | dfu confirm\n"
+         "wipe confirm | dfu confirm  (SOLO POR EL CABLE: por Bluetooth se rechazan)\n"
          "help [comando|clave] | <cmd> ?\n"
+         "Por Bluetooth se puede hacer todo lo del cable MENOS grabar el firmware.\n"
          "Claves: ver docs/protocol_config_v1.md (cualquier clave de config)";
 }
 
@@ -195,8 +225,13 @@ bool cliTypedSet(DigiConfig &cfg, const String &key, const String &val, String &
   return typedSet(cfg, key, val, errOut);
 }
 
-String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
+String cliExecute(DigiConfig &cfg, const char *line, CliOrigen origen) {
   String out;
+
+  // Por radio (control remoto) las reglas son las de siempre: lo minimo y sin inundar el
+  // canal. Por el cable y por Bluetooth NO hay diferencia de permisos salvo el modo
+  // grabacion, que se rechaza mas abajo y solo cuando la orden llega por el aire.
+  const bool porRadio = (origen == CliOrigen::Rf);
 
   String cmd = line;
   cmd.trim();
@@ -211,7 +246,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
 
   // "<cmd> ?" -> usage, or current value when the verb is a config key
   if (rest == "?" || rest == "HELP") {
-    if (verb == "HELP") return helpText(viaRemote);
+    if (verb == "HELP") return helpText(origen);
     if (verb == "SET") return "set <clave> <valor> | ejemplo: set digiMode 1";
     if (verb == "MUTE") return "mute | apaga toda TX (RX sigue)";
     if (verb == "UNMUTE") return "unmute | reactiva TX";
@@ -222,7 +257,11 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     if (verb == "FACTORY_RESET")
       return "factory_reset confirm | fabrica conservando callsign+managers+remote";
     if (verb == "WIPE")
-      return "wipe confirm | borrado total (solo USB)";
+      return "wipe confirm | borrado total (solo por el cable USB)";
+    if (verb == "DFU")
+      return "dfu confirm | entra en el cargador UF2 (solo por el cable USB)";
+    if (verb == "BLE")
+      return "ble | estado del enlace Bluetooth (estado, nombre, MTU, contadores, PIN)";
     if (verb == "DIAG")
       return "diag on|off|nmea on|nmea off|? | diagnostico JSON por USB";
     if (verb == "USB")
@@ -246,10 +285,10 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     return "ERR: comando desconocido (" + verb + ")";
   }
 
-  if (verb == "HELP") return helpText(viaRemote);
+  if (verb == "HELP") return helpText(origen);
 
   // rate limit pings over RF (NavaCLI urgent pattern)
-  if (verb == "PING" && viaRemote) {
+  if (verb == "PING" && porRadio) {
     static uint32_t lastPing = 0;
     uint32_t now = millis();
     if (now - lastPing < 10000) return "";
@@ -282,7 +321,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     //   que el driver de la tinta lee el puerto mientras espera al panel: `bombeo` sube
     //   con cada repintado y `dentro` tiene que quedarse en 0 (nada ejecutado dentro del
     //   driver). Solo por USB: la respuesta no cabe en un mensaje APRS.
-    if (viaRemote) return "ERR: usb solo por USB";
+    if (porRadio) return "ERR: usb solo por el cable o Bluetooth";
     static char ub[128];
     usbBombeoResumen(ub, sizeof(ub));
     return ub;
@@ -439,19 +478,25 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     return cb;
   }
   if (verb == "LOG") {
-    // Trip log stored in flash (survives power cycles). USB only: a dump over
-    // RF would flood the channel.
+    // Trip log stored in flash (survives power cycles).
+    // ★★ POR RADIO NO, POR BLUETOOTH SI (orden del operador, 2026-09-17) ★★
+    //   Un volcado por RF inundaria el canal (por eso sigue vetado ahi), pero el Bluetooth es
+    //   un puerto serie como el cable: la app tiene que poder descargar el registro de viaje
+    //   SIN cable, que es justo lo que pidio el operador. El volcado sale por donde entro la
+    //   orden (protocolHostWrite), asi que el mismo `log dump` vale para los dos.
     if (rest == "dump") {
-      if (viaRemote) return "ERR: log dump solo por USB";
-      flogDump(Serial);
+      if (porRadio) return "ERR: log dump solo por el cable o Bluetooth";
+      flogDump(hostStream(origen));
+      protocolFlushSalida();
       return "LOG dump ok";
     }
     if (rest == "stats" || rest == "") {
-      flogStats(Serial);
+      flogStats(hostStream(origen));
+      protocolFlushSalida();
       return "";
     }
     if (rest == "clear") {
-      if (viaRemote) return "ERR: log clear solo por USB";
+      if (porRadio) return "ERR: log clear solo por el cable o Bluetooth";
       return flogClear() ? "LOG cleared" : "ERR: bateria baja";
     }
     if (rest == "on") {
@@ -550,7 +595,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
   }
   if (verb == "Q" || verb == "QUERY") {
     // q <consulta>: prueba el motor de consultas APRS SIN emitir (solo USB).
-    if (viaRemote) return "ERR: q solo por USB";
+    if (porRadio) return "ERR: q solo por el cable o Bluetooth";
     rest.trim();
     if (rest.length() == 0) return "ERR: q <consulta> (ej: q ?APRS?)";
     String r = aprsQueryText(cfg, rest);
@@ -561,7 +606,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     // rxs <de> <para> <texto>: inyecta una trama recibida (solo USB). Sirve
     // para probar con una sola placa los acuses, las consultas y el control
     // remoto, sin necesidad de un segundo equipo.
-    if (viaRemote) return "ERR: rxs solo por USB";
+    if (porRadio) return "ERR: rxs solo por el cable o Bluetooth";
     rest.trim();
     int sp1 = rest.indexOf(' ');
     if (sp1 <= 0) return "ERR: rxs <de> <para> <texto>";
@@ -583,7 +628,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     // OIRLA sin gastar bateria. La de verdad suena sola cuando el nodo se va a dormir por
     // bateria baja; esto es para ajustarla de oido (las notas estan en displayLowBatTone()).
     // OJO: bloquea ~1,3 s, que es lo que dura la melodia.
-    if (viaRemote) return "ERR: tono solo por USB";
+    if (porRadio) return "ERR: tono solo por el cable o Bluetooth";
     // Se pregunta ANTES: el zumbador solo suena si la placa es un Plus, y eso se sabe por
     // el motor (ver hapticEsPlus()). Asi el comando dice si de verdad ha sonado o no.
     const bool plus = hapticEsPlus();
@@ -601,7 +646,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     // POR QUE EXISTE: los patrones hay que ELEGIRLOS DE OIDO (cual se nota, cual molesta).
     // Esta es la forma de probarlos uno a uno antes de engancharlos a los avisos, en vez de
     // adivinar que efecto queda bien. NO bloquea: el chip reproduce el efecto el solo.
-    if (viaRemote) return "ERR: vibra solo por USB";
+    if (porRadio) return "ERR: vibra solo por el cable o Bluetooth";
     static char vb[140];
     if (rest.length() == 0) {
       bool ok = hapticInit();
@@ -625,7 +670,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     // en ese bus: el BME280 (0x76/0x77) y el reloj PCF8563 (0x51). Si sale el 0x51 y no
     // el 0x77, el bus vive y el que falla es el BME280.
     // SOLO LEE: no escribe en ningun chip ni en la configuracion.
-    if (viaRemote) return "ERR: i2cscan solo por USB";
+    if (porRadio) return "ERR: i2cscan solo por el cable o Bluetooth";
     static char ib[240];
     sensorsI2cScan(ib, sizeof(ib));
     return ib;
@@ -633,7 +678,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
   if (verb == "BATTEST") {
     // battest <mV>: enseña el aviso de batería baja tal como saldría en la
     // baliza con esa tensión y sin USB (para probarlo sin gastar batería).
-    if (viaRemote) return "ERR: battest solo por USB";
+    if (porRadio) return "ERR: battest solo por el cable o Bluetooth";
     int mv = rest.length() ? rest.toInt() : 0;
     if (mv <= 0) {
       char b[80];
@@ -730,12 +775,32 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     return b;
   }
   if (verb == "DFU") {
+    // ★★ EL MODO GRABACION NECESITA EL CABLE (orden del operador, 2026-09-17) ★★
+    //   POR QUE SE RECHAZA POR EL AIRE: `dfu` reinicia el nodo en el cargador UF2, y el
+    //   cargador se maneja copiando un fichero en una unidad que solo aparece con el cable
+    //   puesto. Si la orden llega por Bluetooth (o por radio), el nodo se reinicia, deja de
+    //   existir como nodo y YA NO HAY FORMA de terminar la grabacion por donde vino: se queda
+    //   fuera de juego hasta que alguien le enchufe un cable. Es exactamente la clase de
+    //   detalle que deja un nodo "bloqueado", asi que se corta aqui y se dice por que.
+    if (origen != CliOrigen::Usb) {
+      return "ERR: el modo grabacion necesita el cable USB (no se puede completar por "
+             "Bluetooth ni por radio)";
+    }
     if (rest != "confirm") return "ERR: dfu confirm (entra en bootloader UF2)";
-    Serial.println("DFU: reboot into UF2 bootloader");
-    Serial.flush();
+    // El aviso sale por la misma puerta que las respuestas (cable o Bluetooth), y se le da un
+    // respiro corto antes de desaparecer en el cargador.
+    protocolHostOut("DFU: reboot into UF2 bootloader");
+    protocolFlushSalida();
     delay(100);
     enterUf2Dfu();
     return "";  // never reached
+  }
+  if (verb == "BLE") {
+    // Comando de taller (2026-09-17): una sola palabra de escribir, y contesta todo lo que
+    // hace falta para saber si el enlace Bluetooth esta vivo SIN tener que mirarlo desde un
+    // movil: si anuncia, si hay huesped, el MTU, los contadores y si el PIN se esta pidiendo.
+    // El resumen lo arma ble_kiss.cpp, que es el unico que conoce esos numeros.
+    return bleResumen();
   }
   if (verb == "SET" && rest.length() > 0) {
     int eq = rest.indexOf(' ');
@@ -788,7 +853,7 @@ String cliExecute(DigiConfig &cfg, const char *line, bool viaRemote) {
     return "OK factory_reset (acceso conservado: callsign+managers+remote)";
   }
   if (verb == "WIPE") {
-    if (viaRemote) return "ERR: wipe solo USB";
+    if (porRadio) return "ERR: wipe solo por el cable USB";
     if (rest != "confirm") return "ERR: wipe confirm";
     storeWipe();
     cfg = DigiConfig();

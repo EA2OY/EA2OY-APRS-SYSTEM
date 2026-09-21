@@ -13,7 +13,7 @@
  * Opciones:
  *   --port N     puerto de escucha (por defecto 14580, el de APRS-IS)
  *   --secs N     segundos que permanece escuchando (por defecto 120)
- *   --call C     indicativo que se hace creer al iGate (por defecto N0CALL-10)
+ *   --call C     indicativo que se hace creer al iGate (por defecto L0RA-10)
  *   --out FILE   guardar todo en un fichero
  *
  * Detalle importante: ademas de escuchar, contesta con un logresp "verified",
@@ -39,7 +39,7 @@ function opt(name, def) {
 
 const port = parseInt(opt('port', '14580'), 10) || 14580;
 const secs = parseInt(opt('secs', '120'), 10) || 120;
-const fakeCall = String(opt('call', 'N0CALL-10')).toUpperCase();
+const fakeCall = String(opt('call', 'L0RA-10')).toUpperCase();
 const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
 const outFile = String(opt('out', path.join('logs', `fakeserver_${stamp}.log`)));
 

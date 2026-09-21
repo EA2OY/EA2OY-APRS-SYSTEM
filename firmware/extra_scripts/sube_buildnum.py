@@ -41,14 +41,25 @@
 #
 #  ★ VARIOS ENTORNOS EN UNA TANDA: `pio run -e A -e B -e C` sube el numero UNA
 #    SOLA VEZ, y los tres binarios salen con el MISMO numero. Es lo que se quiere:
-#    una tanda de compilacion = un numero, y asi no hay que averiguar cual de los
-#    cuatro binarios es "el ultimo". El guardia `_ya_subido` lo garantiza, porque
-#    PlatformIO carga este script una vez por proceso aunque compile 7 entornos.
+#    una tanda de compilacion = un numero.
+#    ★★ CORREGIDO EL 2026-09-16: el guardia en memoria NO bastaba (PlatformIO carga
+#       este script UNA VEZ POR ENTORNO, medido), y la comprobacion por fecha del .elf
+#       que se puso en su lugar **no funcionaba nunca** (se tomaba DESPUES de enlazar:
+#       ver el porque completo en _sube_el_numero). Resultado: el contador se quedo
+#       clavado en b9 durante siete cambios de firmware seguidos, que es justo lo que
+#       este script existe para evitar. Ahora la tanda se apunta en un FICHERO
+#       (`.pio/.buildnum_tanda`), identificada por el PID del proceso `pio`.
+#
+#  ★ QUE NUMERO LLEVA CADA BINARIO: el que tenian los ficheros AL EMPEZAR la tanda
+#    (los lee PlatformIO al arrancar), y al terminar los ficheros se quedan con el
+#    siguiente. O sea: **el binario dice lo que lleva; el fichero, lo que saldra la
+#    proxima vez**.
 #
 #  Este script NO sustituye a `verifica_memoria.ps1`: lo complementa. El
 #  verificador sigue comprobando, ademas, que el numero este DENTRO del binario.
 # ============================================================================
 
+import hashlib
 import os
 import re
 
@@ -81,28 +92,92 @@ def _rutas():
     return os.path.join(d, ".buildnum"), os.path.join(d, "platformio.ini")
 
 
-def _elf_del_entorno():
-    """Ruta del .elf que se esta construyendo (el que dice si se compilo algo)."""
-    return env.subst("$BUILD_DIR/${PROGNAME}.elf")
-
-
-def _marca_de_tiempo(path):
-    try:
-        return os.path.getmtime(path)
-    except OSError:
-        return 0.0
-
-
 PATRON_INI = re.compile(r'(-DAPP_BUILD_NUM=\\?"b)(\d+)(\\?")')
 
-# Guardia de proceso: PlatformIO carga los extra_scripts UNA vez por invocacion,
-# aunque despues compile varios entornos. Con esta bandera, el numero sube una
-# sola vez por tanda.
+# Guardia de tanda: el numero sube UNA sola vez por orden de compilacion.
+# ★★ ESTA BANDERA EN MEMORIA NO BASTA, Y ESTA MEDIDO (2026-09-16): PlatformIO aisla cada
+#    entorno y CARGA ESTE SCRIPT UNA VEZ POR ENTORNO, asi que con `pio run -e A -e B -e C
+#    -e D` la bandera se pierde y el contador subiria cuatro veces. Por eso la marca de
+#    tanda se resuelve con la HUELLA DEL CODIGO (ver _fuentes_huella()).
+#    ★★ PRIMER INTENTO, FALLIDO Y MEDIDO (2026-09-16): se probo a marcar la tanda con el
+#       PID del proceso `pio` en un fichero. NO SIRVE: cada entorno de la misma orden corre
+#       con padre distinto, asi que el contador subio CUATRO veces en una tanda de cuatro
+#       (medido: b9, b10, b11, b12, b13). La huella del codigo si los agrupa.
 _ya_subido = False
 
-# Marca de tiempo del .elf ANTES de compilar: sirve para saber si este entorno ha
-# tenido trabajo de verdad (ver _sube_el_numero).
-_elf_antes = None
+
+def _marca_de_fuentes():
+    """Fichero donde se apunta la huella del codigo que ya tiene numero.
+
+    Va dentro de `.pio/` (ignorado por git en todos los arboles): es comun a todos los
+    entornos del proyecto, que es lo que hace falta, y no ensucia el repositorio. NO vale
+    `$BUILD_DIR`, que es distinto para cada entorno.
+    """
+    d = os.path.join(_dir_proyecto(), ".pio")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        pass
+    return os.path.join(d, ".buildnum_fuentes")
+
+
+def _fuentes_huella():
+    """Huella del CODIGO que se va a compilar (nombre y contenido de cada fuente).
+
+    ★★ PARA QUE (esto es el corazon del arreglo del 2026-09-16) ★★
+    El numero tiene que identificar LO QUE LLEVA EL BINARIO, no la vez que se le dio a
+    compilar. Con la huella del codigo sale justo eso, y ademas resuelve la tanda:
+      - los CUATRO entornos de una tanda comparten huella -> se gasta UN numero, no cuatro
+        (que es lo que pasaba con la marca por PID: cada entorno corre con padre distinto,
+        medido);
+      - dos compilaciones seguidas DE LO MISMO no gastan numero (el firmware es identico,
+        aunque se borre el .elf y se vuelva a enlazar);
+      - en cuanto se toca una fuente, la huella cambia y la compilacion siguiente gasta uno.
+
+    Se mira `src/`, `variants/`, `boards/` y `extra_scripts/`, mas `platformio.ini` CON LA
+    LINEA DEL NUMERO NEUTRALIZADA: cambiarla no es cambiar el codigo, y si contara, cada
+    subida invalidaria la huella y el contador no pararia de subir.
+    """
+    d = _dir_proyecto()
+    h = hashlib.sha256()
+    for sub in ("src", "variants", "boards", "extra_scripts"):
+        base = os.path.join(d, sub)
+        for raiz, dirs, ficheros in os.walk(base):
+            dirs.sort()
+            for f in sorted(ficheros):
+                if f.endswith(".pyc"):
+                    continue
+                p = os.path.join(raiz, f)
+                h.update(os.path.relpath(p, d).replace("\\", "/").encode("utf-8"))
+                try:
+                    with open(p, "rb") as fh:
+                        h.update(fh.read())
+                except OSError:
+                    pass
+    try:
+        with open(os.path.join(d, "platformio.ini"), "r", encoding="utf-8") as fh:
+            ini = PATRON_INI.sub(lambda m: m.group(1) + "N" + m.group(3), fh.read())
+        h.update(ini.encode("utf-8"))
+    except OSError:
+        pass
+    return h.hexdigest()
+
+
+def _fuentes_ya_contadas():
+    """¿El codigo que hay ahora es el mismo que ya tiene numero?"""
+    try:
+        with open(_marca_de_fuentes(), "r", encoding="utf-8") as fh:
+            return fh.read().strip() == _fuentes_huella()
+    except Exception:      # noqa: BLE001  (marca ausente o ilegible: se gasta numero)
+        return False
+
+
+def _apunta_fuentes():
+    try:
+        with open(_marca_de_fuentes(), "w", encoding="utf-8") as fh:
+            fh.write(_fuentes_huella())
+    except OSError:
+        pass   # sin marca se puede gastar de mas, pero nunca de menos: no rompe nada
 
 
 def _leer(path):
@@ -142,23 +217,13 @@ def _numero_del_ini(f_ini):
 
 
 def comprueba_cuadre():
-    """Antes de compilar: los dos ficheros tienen que decir lo mismo."""
-    # ★ SI YA SE SUBIO EN ESTA TANDA, NO SE VUELVE A COMPROBAR. Con `pio run -e A
-    #   -e B`, el primer entorno sube el contador al terminar; el segundo entorno
-    #   todavia lleva en memoria las flags de cuando arranco PlatformIO (b4), asi
-    #   que si se volviera a comprobar saldria un descuadre FALSO y la tanda se
-    #   pararia a la mitad. Es exactamente el fallo que este script existe para
-    #   evitar, cometido por el propio script: por eso se comprueba una vez por
-    #   tanda, que es cuando el dato es fiable.
-    if _ya_subido:
-        return
+    """Antes de compilar: `.buildnum` y `platformio.ini` tienen que decir lo mismo.
 
-    # ★ Y SE APUNTA SI ESTE ENTORNO TRAIA TRABAJO PENDIENTE (2026-09-15). Esto es lo
-    #   que decide despues si el numero se gasta o no; el porque, largo y tendido,
-    #   en _sube_el_numero().
-    global _elf_antes
-    _elf_antes = _marca_de_tiempo(_elf_del_entorno())
-
+    Se llama al CARGAR el script (que va con `pre:` en platformio.ini), una vez por entorno.
+    Si los dos ficheros no cuadran, PARA la compilacion: es mejor no compilar que compilar y
+    grabar un binario cuyo numero miente. Y se comprueba ANTES de subir, para que una subida
+    no tape nunca un descuadre.
+    """
     f_buildnum, f_ini = _rutas()
     n_contador = _numero_del_contador(f_buildnum)
     n_ini, _ = _numero_del_ini(f_ini)
@@ -187,103 +252,82 @@ def comprueba_cuadre():
     print("Numero de compilacion: b%d (contador y platformio.ini cuadran)" % n_ini)
 
 
-def _sube_el_numero(source, target, env):
-    """Despues de compilar bien: +1 en .buildnum y en platformio.ini.
+def sube_el_numero_si_toca():
+    """Sube el numero SI el codigo ha cambiado, y se llama AL CARGAR este script.
 
-    ★★ CUANDO SE GASTA UN NUMERO, Y POR QUE (esto se aprendio midiendo, 2026-09-15) ★★
+    ★★ LO QUE HABIA, Y POR QUE NO VALIA (todo esto medido el 2026-09-16) ★★
 
-    Lo natural seria "una tanda de compilacion = un numero", y se intento con una
-    bandera en memoria. **NO SIRVE**: al compilar `pio run -e A -e B -e C -e D`,
-    PlatformIO aisla cada entorno y **carga este script una vez por entorno**, asi
-    que la bandera se pierde y el contador subia 4 veces (medido: b5, b6, b7, b8 en
-    una sola tanda).
+    (1) La comprobacion "¿este entorno ha rehecho algo?" comparaba la fecha del .elf antes
+        y despues, pero la muestra "antes" se tomaba en una accion PRE del objetivo `.hex`,
+        que corre DESPUES de enlazar -> las dos fechas eran iguales SIEMPRE -> el contador
+        se quedo clavado en b9 durante siete cambios de firmware seguidos.
 
-    Lo que SI es fiable es preguntar **si este entorno ha tenido trabajo de verdad**:
-    se apunta la fecha del .elf antes de empezar y se compara con la de despues.
+    (2) Se sustituyo por una marca de tanda con el PID del proceso `pio`. TAMPOCO: cada
+        entorno de la misma orden corre con padre distinto, asi que una tanda de cuatro
+        entornos subio CUATRO numeros (medido: b9, b10, b11, b12, b13).
 
-      - Si el .elf es NUEVO (se acaba de enlazar), la compilacion ha hecho trabajo
-        -> se gasta un numero.
-      - Si el .elf es el MISMO (no habia nada que rehacer), NO se gasta numero.
+    (3) Y subiendo el numero en un gancho POST aparecio el tercer problema: PlatformIO lee
+        `platformio.ini` POR ENTORNO (no una vez al arrancar), asi que el primero compilaba
+        con b10 y los demas con b11 -> binarios de la MISMA tanda con numeros distintos.
 
-    Y con eso sale el comportamiento que se quiere sin ningun truco:
-      - **Primera tanda** (los .elf no existen o estan viejos): compila el primer
-        entorno, gasta UN numero, y los demas entornos de la tanda ya no compilan
-        nada (su .elf acaba de quedar al dia), asi que **no gastan mas numeros**.
-      - **Segunda tanda seguida** (nada tocado): no compila nadie, no gasta numeros.
-      - **Se toca un fuente y se compila**: el primer entorno que rehace el .elf gasta
-        un numero; los demas, no.
-      - **Un binario recien hecho y uno de la tanda anterior** pueden llevar numeros
-        distintos: es correcto y ademas util, porque dice cual se rehizo.
-
-    Los cuatro binarios de una misma tanda llevan el MISMO numero de todas formas,
-    porque todos leen `.buildnum` al arrancar PlatformIO, antes de que el primero
-    termine y lo suba.
+    ★★ LO QUE HAY AHORA ★★
+    - El numero identifica AL CODIGO, no a la vez que compilas: se guarda la HUELLA del
+      codigo (ver _fuentes_huella()) y solo se sube cuando esa huella cambia.
+      Consecuencias: una tanda de cuatro entornos gasta UN numero; recompilar lo mismo no
+      gasta ninguno; y en cuanto se toca una fuente, la compilacion siguiente gasta uno.
+    - Se sube **AL CARGAR EL SCRIPT**, o sea antes de que este entorno resuelva sus flags:
+      asi los cuatro entornos de la tanda leen el MISMO numero y los binarios dicen lo que
+      dicen los ficheros. (Si se subiera al terminar, el primero saldria con el viejo.)
+    - Si la compilacion falla, el numero ya esta gastado. Es a proposito y es el precio de
+      que el binario diga lo que lleva: un numero gastado sin binario no molesta a nadie;
+      un binario con el numero viejo, si.
     """
     global _ya_subido
     if _ya_subido:
-        return  # ya se subio en esta tanda (otro entorno del mismo `pio run`)
-
-    # ¿Este entorno ha compilado algo de verdad? Si no, no se gasta numero.
-    elf_ahora = _marca_de_tiempo(_elf_del_entorno())
-    if _elf_antes is not None and elf_ahora == _elf_antes:
-        print("Numero de compilacion: no se sube (este entorno no ha tenido que rehacer nada)")
         return
 
     f_buildnum, f_ini = _rutas()
     n_contador = _numero_del_contador(f_buildnum)
     n_ini, texto_ini = _numero_del_ini(f_ini)
-    if n_contador is None or n_ini is None:
-        # No deberia pasar: comprueba_cuadre() ya lo habria parado. Se avisa y se
-        # sigue, para no romper una compilacion que ha ido bien por un problema
-        # del contador.
-        print("aviso: no he podido subir el numero de compilacion (revisa .buildnum)")
+    if n_contador is None or n_ini is None or n_contador != n_ini:
+        # El cuadre lo para comprueba_cuadre() con su mensaje. Aqui, sin cuadre, no se
+        # toca nada: mejor un numero viejo que un numero inventado.
         return
 
-    nuevo = max(n_contador, n_ini) + 1
+    if _fuentes_ya_contadas():
+        _ya_subido = True
+        print("Numero de compilacion: b%d, sin cambios (este codigo ya tiene numero)" % n_ini)
+        return
+
+    nuevo = n_ini + 1
 
     _escribir(f_buildnum, "%d\n" % nuevo)
     _escribir(f_ini, PATRON_INI.sub(lambda m: m.group(1) + str(nuevo) + m.group(3),
                                     texto_ini, count=1))
     _ya_subido = True
+    _apunta_fuentes()
 
-    print("Numero de compilacion subido a b%d: el binario que acabas de hacer lleva b%d,"
-          % (nuevo, n_ini))
-    print("y la PROXIMA compilacion saldra con b%d (no hay que tocar nada a mano)." % nuevo)
-
-
-def _envuelve(nombre, fn):
-    """Ejecuta fn() sin poder tumbar la compilacion por un fallo del contador."""
-    def _w(source, target, env):
-        try:
-            fn()
-        except Exception as exc:   # noqa: BLE001  (a proposito: nada debe romper el build)
-            print("aviso: el contador de compilacion ha fallado (%s): %s" % (nombre, exc))
-    return _w
-
-
-def _envuelve_con_targets(fn):
-    def _w(source, target, env):
-        try:
-            fn(source, target, env)
-        except Exception as exc:   # noqa: BLE001
-            print("aviso: el contador de compilacion ha fallado: %s" % exc)
-    return _w
+    print("Numero de compilacion subido a b%d (el codigo ha cambiado):" % nuevo)
+    print("los entornos de esta tanda tienen que salir con b%d dentro." % nuevo)
 
 
 # ---------------------------------------------------------------- enganches
-# ★ DE QUE OBJETIVO SE CUELGAN, Y POR QUE (esto se probo, no se supuso)
+# ★★ AQUI NO HAY GANCHOS: EL CUADRE Y LA SUBIDA SE HACEN AL CARGAR EL SCRIPT ★★
 #
-#   - 1er intento: "$BUILD_DIR/${PROGNAME}.elf"  -> NO SE DISPARABAN (compilacion
-#     correcta y contador quieto, en silencio).
-#   - 2o intento: "buildprog"                    -> TAMPOCO. Compilado el entorno
-#     `techo_plus_s140v7` con exito y el numero sin subir.
-#   - 3er intento (el bueno): "$BUILD_DIR/${PROGNAME}.hex", que es EXACTAMENTE el
-#     objetivo que ya usa nrf52_uf2.py en este mismo proyecto y que se sabe que
-#     corre (por ahi sale el mensaje "Generating UF2 file"). Si ese objetivo
-#     funciona para empaquetar, funciona para esto.
+#   Y ese es el arreglo del 2026-09-16. El script se carga con `pre:` en `platformio.ini`
+#   (ojo: hay que mantener ese `pre:`), o sea **antes de que el entorno resuelva sus flags de
+#   compilacion**. Por eso, cuando toca subir el numero, el entorno que lo sube compila YA con
+#   el nuevo, igual que los demas de la tanda. Medido antes de arreglarlo:
+#     - con la subida en un gancho POST, el primero salia con b10 y los demas con b11;
+#     - con `env.Replace(BUILD_FLAGS=...)` intentando forzarlo, tampoco: el primero se quedaba
+#       con el viejo (la lista que se reescribe no es la que usa el compilador).
 #
-# La comprobacion va en el PRE (antes de generar el .hex) y la subida en el POST
-# (cuando el .hex ya existe = la compilacion ha terminado bien). Si el enlazado
-# falla, el POST no corre y el numero NO se gasta.
-env.AddPreAction("$BUILD_DIR/${PROGNAME}.hex", _envuelve("comprobacion", comprueba_cuadre))
-env.AddPostAction("$BUILD_DIR/${PROGNAME}.hex", _envuelve_con_targets(_sube_el_numero))
+#   Lo que decide si se gasta numero es la HUELLA DEL CODIGO, no el momento: ver
+#   _fuentes_huella(). Y el cuadre se comprueba ANTES de subir, para que una subida no tape
+#   nunca un descuadre.
+try:
+    comprueba_cuadre()          # si los dos ficheros no dicen lo mismo, PARA la compilacion
+    sube_el_numero_si_toca()    # sube SOLO si el codigo ha cambiado (huella)
+except Exception as exc:   # noqa: BLE001  (nada del contador debe tumbar una compilacion)
+    print("aviso: el contador de compilacion ha fallado: %s" % exc)
+

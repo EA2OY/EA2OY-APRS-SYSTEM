@@ -126,21 +126,21 @@ fichero con **todo** lo que lleva grabado, así que siempre podrás dejarla como
 
 | Tu placa | Fichero |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b13_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b13_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo** o T-Echo Plus, con cargador **S140 versión 6** | `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2` |
-| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo** o T-Echo Plus, con cargador **S140 versión 6** | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v6.uf2` |
+| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 > 📌 **Los ocho ficheros de `firmware/release/` son estos** (los ocho nombres exactos, para que no
-> haya dudas al buscar en la carpeta): `KachoSystem_v1.0alpha_b3_Faketec_HT-RA62_433.uf2`,
-> `KachoSystem_v1.0alpha_b3_Faketec_E22P-433M30S.uf2`,
-> `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2`,
-> `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo-Plus.uf2`,
-> `KachoSystem_v1.0alpha_b13_Faketec_HT-RA62_433.uf2`,
-> `KachoSystem_v1.0alpha_b13_Faketec_E22P-433M30S.uf2`,
-> `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo_S140v7.uf2` y
-> `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo-Plus_S140v7.uf2`.
+> haya dudas al buscar en la carpeta): `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2`,
+> `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2`,
+> `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v6.uf2`,
+> `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v6.uf2`,
+> `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2`,
+> `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2`,
+> `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v7.uf2` y
+> `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v7.uf2`.
 > Las cuatro filas de Faketec y T-Echo-S140v7 apuntan a **b13** (el firmware actual); la fila
 > del cargador **v6** apunta a **b3** a propósito, y se explica justo debajo.
 
@@ -154,19 +154,19 @@ fichero con **todo** lo que lleva grabado, así que siempre podrás dejarla como
 >
 > | Fichero | Fecha | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b13_Faketec_HT-RA62_433.uf2` | 2026-09-16 | 749568 | `0B9E1FE9E52974EEDAB852E35CF2F17FF90AF4D91D28CB2B82DAA828604F097A` |
-> | `KachoSystem_v1.0alpha_b13_Faketec_E22P-433M30S.uf2` | 2026-09-16 | 749568 | `B65B79A3596B1906AE16AEC51FEEC1C1C57D162169CF294B1D61450C6DDFE69F` |
-> | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo_S140v7.uf2` | 2026-09-16 | 743424 | `31148799C9140770AC33BF861F96868C38B29739C251FED5237A0A2F928ADB2D` |
-> | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-16 | 740352 | `1F8763492C799DCB3C0F4B7FEAACC6A710CD3B062BE3C9BDE641155F3615F65E` |
-> | `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2` | 2026-09-14 | 599552 | `5F06A6F660D24F62BD8FF539FEEB08291EBE7E64C67E0FEA5C4DB18CB8661E78` |
-> | `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo-Plus.uf2` | 2026-09-14 | 599552 | `E7A121F0442A8500617B335F3432340C8DB39E135DBC3F35961035B8AF903B3F` |
-> | `KachoSystem_v1.0alpha_b3_Faketec_HT-RA62_433.uf2` | 2026-09-14 | 710656 | `6C4771CB380AA01ED3EC58E26428CEBC0CCC9E23BE234BB63E5754C139DEF968` |
-> | `KachoSystem_v1.0alpha_b3_Faketec_E22P-433M30S.uf2` | 2026-09-14 | 710656 | `059AC4EF662CE24035FEB3E2503B56182E87BEF10EA1461D92EA36E698200A15` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2` | 2026-09-21 | 742400 | `CB37F9B42D01F191F0336CFA360C5D55E0A5FA984A93161CCEDF16119069C993` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2` | 2026-09-21 | 742400 | `10F198B2D2A61D5B4C4DB4BAAEDF77AB6869F228FBF913990962A21D06F5D73C` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v7.uf2` | 2026-09-21 | 735232 | `34DC342C58F4E9B1E04ACE154D1972F5FFBD64494B7F171A8CDC27E7626131B0` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-21 | 732672 | `68AD6971412AD0ABB57F6085FEAE63F532A82EA526EB24825263169CC4F2460D` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v6.uf2` | 2026-09-21 | 735232 | `4C0DD52BEDC71E35C9CB1A17066290E2EE35989D442048C98BFFC2335839D4BC` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v6.uf2` | 2026-09-21 | 732672 | `0CD22B53153ECCFC883828A5A3DD3D4C8723D96BF91E9A4FD28105D44FC2406E` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2` | 2026-09-21 | 742400 | `CB37F9B42D01F191F0336CFA360C5D55E0A5FA984A93161CCEDF16119069C993` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2` | 2026-09-21 | 742400 | `10F198B2D2A61D5B4C4DB4BAAEDF77AB6869F228FBF913990962A21D06F5D73C` |
 >
 > Las cuatro filas **b13** son las que se recompilaron el **2026-09-16** desde el código de este
 > repositorio; las **b3** son del **2026-09-14** y se dejan tal cual (ver el aviso del cargador v6).
 > Para comprobar la huella en tu ordenador (Windows, PowerShell):
-> `Get-FileHash .\KachoSystem_v1.0alpha_b13_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
+> `Get-FileHash .\KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
 
 > ⚠️ **Los ficheros del T-Echo no son intercambiables**: el cargador de arranque (SoftDevice S140)
 > deja la aplicación en un sitio distinto de la memoria según su versión. Mira el fichero
@@ -271,11 +271,13 @@ pio run -e faketec_sx1262_433      # Faketec + HT-RA62 (SX1262)
 pio run -e faketec_e22p_433        # Faketec + E22P-433M30S (1 W)
 pio run -e techo_s140v7            # LilyGO T-Echo, cargador S140 v7
 pio run -e techo_plus_s140v7       # LilyGO T-Echo Plus, cargador S140 v7 (pantalla de tinta)
+pio run -e techo_v6                # LilyGO T-Echo, cargador S140 v6
+pio run -e techo_plus_s140v6       # LilyGO T-Echo Plus, cargador S140 v6
 ```
 
-Los entornos **`techo`** y **`techo_plus`** (sin `s140v7`) siguen ahí para las placas con cargador
-**S140 versión 6**. El entorno **`techo_plus_hello`** es un banco de pruebas de la pantalla y hoy
-**no compila**: le falta su fuente en el repositorio.
+Los entornos para las placas con cargador **S140 versión 6** llevan `v6` en el nombre
+(`techo_v6`, `techo_plus_s140v6`). El entorno **`techo_plus_hello`** es un banco de pruebas de
+la pantalla y hoy **no compila**: le falta su fuente en el repositorio.
 
 El resultado queda en `.pio/build/<entorno>/firmware.uf2`, listo para copiar a la placa.
 
@@ -433,11 +435,11 @@ that matches your bootloader's SoftDevice S140 version (see the install guide ab
 
 | Your board | File |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b13_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b13_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo** or T-Echo Plus, bootloader **S140 version 6** | `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2` |
-| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo** or T-Echo Plus, bootloader **S140 version 6** | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v6.uf2` |
+| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 The other three files in `firmware/release/` are the **b3** builds that the current **b13** ones
 replaced on the Faketec boards and on the T-Echo and T-Echo Plus with an S140 v7 bootloader
@@ -454,14 +456,14 @@ file** for a T-Echo with the version 6 bootloader because **no b13 build exists 
 >
 > | File | Date | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b13_Faketec_HT-RA62_433.uf2` | 2026-09-16 | 749568 | `0B9E1FE9E52974EEDAB852E35CF2F17FF90AF4D91D28CB2B82DAA828604F097A` |
-> | `KachoSystem_v1.0alpha_b13_Faketec_E22P-433M30S.uf2` | 2026-09-16 | 749568 | `B65B79A3596B1906AE16AEC51FEEC1C1C57D162169CF294B1D61450C6DDFE69F` |
-> | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo_S140v7.uf2` | 2026-09-16 | 743424 | `31148799C9140770AC33BF861F96868C38B29739C251FED5237A0A2F928ADB2D` |
-> | `KachoSystem_v1.0alpha_b13_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-16 | 740352 | `1F8763492C799DCB3C0F4B7FEAACC6A710CD3B062BE3C9BDE641155F3615F65E` |
-> | `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo.uf2` | 2026-09-14 | 599552 | `5F06A6F660D24F62BD8FF539FEEB08291EBE7E64C67E0FEA5C4DB18CB8661E78` |
-> | `KachoSystem_v1.0alpha_b3_LilyGO_T-Echo-Plus.uf2` | 2026-09-14 | 599552 | `E7A121F0442A8500617B335F3432340C8DB39E135DBC3F35961035B8AF903B3F` |
-> | `KachoSystem_v1.0alpha_b3_Faketec_HT-RA62_433.uf2` | 2026-09-14 | 710656 | `6C4771CB380AA01ED3EC58E26428CEBC0CCC9E23BE234BB63E5754C139DEF968` |
-> | `KachoSystem_v1.0alpha_b3_Faketec_E22P-433M30S.uf2` | 2026-09-14 | 710656 | `059AC4EF662CE24035FEB3E2503B56182E87BEF10EA1461D92EA36E698200A15` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2` | 2026-09-21 | 742400 | `CB37F9B42D01F191F0336CFA360C5D55E0A5FA984A93161CCEDF16119069C993` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2` | 2026-09-21 | 742400 | `10F198B2D2A61D5B4C4DB4BAAEDF77AB6869F228FBF913990962A21D06F5D73C` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v7.uf2` | 2026-09-21 | 735232 | `34DC342C58F4E9B1E04ACE154D1972F5FFBD64494B7F171A8CDC27E7626131B0` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-21 | 732672 | `68AD6971412AD0ABB57F6085FEAE63F532A82EA526EB24825263169CC4F2460D` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo_S140v6.uf2` | 2026-09-21 | 735232 | `4C0DD52BEDC71E35C9CB1A17066290E2EE35989D442048C98BFFC2335839D4BC` |
+> | `KachoSystem_v1.0alpha_b67_LilyGO_T-Echo-Plus_S140v6.uf2` | 2026-09-21 | 732672 | `0CD22B53153ECCFC883828A5A3DD3D4C8723D96BF91E9A4FD28105D44FC2406E` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_HT-RA62_433.uf2` | 2026-09-21 | 742400 | `CB37F9B42D01F191F0336CFA360C5D55E0A5FA984A93161CCEDF16119069C993` |
+> | `KachoSystem_v1.0alpha_b67_Faketec_E22P-433M30S.uf2` | 2026-09-21 | 742400 | `10F198B2D2A61D5B4C4DB4BAAEDF77AB6869F228FBF913990962A21D06F5D73C` |
 
 ### Build
 

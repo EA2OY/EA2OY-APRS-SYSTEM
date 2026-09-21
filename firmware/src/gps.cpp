@@ -8,6 +8,7 @@
 #include "gps.h"
 
 #include "pins_board.h"   // PIN_GPS_EN segun la placa
+#include "protocol.h"     // protocolHostWrite(): el eco NMEA sale por donde entro la orden
 
 #include <TinyGPS++.h>
 
@@ -148,7 +149,10 @@ void gpsUpdate() {
   while (Serial1.available()) {
     char c = (char)Serial1.read();
     gReader.encode(c);
-    if (gEcho) Serial.write((uint8_t)c);
+    // Eco crudo del NMEA (diagnostico). Sale por la misma puerta que las respuestas: por el
+    // cable si el diagnostico se encendio por el cable, y por el aire si se encendio desde la
+    // app por Bluetooth.
+    if (gEcho) protocolHostWrite(&c, 1);
     if (c == '\n') {
       gLine[gLineLen] = '\0';
       if (gLineLen > 6) parseLine(gLine);

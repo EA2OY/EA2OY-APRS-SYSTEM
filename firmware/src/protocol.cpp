@@ -11,6 +11,7 @@
 #include "diag.h"
 #include "display.h"
 #include "gps.h"
+#include "radio.h"   // boardName() / radioModuleName() del informe de estado
 #include "sensors.h"
 #include "tnc.h"
 
@@ -144,7 +145,106 @@ int puertoLee(void *ctx) {
   Stream *s = static_cast<Stream *>(ctx);
   return s->read();
 }
+
+/* ★★ POR DONDE SALE LO QUE EL NODO CONTESTA (2026-09-17, Bluetooth) ★★
+   Ver protocol.h. Es UN solo sitio para los dos transportes: el origen de la ultima linea
+   atendida decide si la respuesta va por el cable o por el aire. La puerta del Bluetooth la
+   registra `bleLinkInit()` (ble_kiss.cpp) al arrancar: asi esta cabecera no tiene que incluir
+   la del enlace, que a su vez incluye esta. */
+Origen gOrigen = Origen::Usb;
+ProtocolSalidaFn gSalidaBle = nullptr;
+bool gSalidaBleActiva = false;
+ProtocolEstadoFn gEstadoBle = nullptr;
+
+void salidaCruda(const char *p, size_t n) {
+  if (n == 0) return;
+  if (gOrigen == Origen::Ble && gSalidaBle != nullptr && gSalidaBleActiva) {
+    // La espera es CORTA y FINITA a proposito: si el enlace esta atascado (el movil se alejo
+    // y el aviso no sale), la respuesta se pierde pero el nodo NO se queda colgado. Las
+    // lineas normales se vacian solas desde bleLoop(), asi que esto no espera nada.
+    gSalidaBle((const uint8_t *)p, n, 250);
+    return;
+  }
+  Serial.write((const uint8_t *)p, n);
+}
 }  // namespace
+
+void protocolSalidaBle(ProtocolSalidaFn escribir, bool activa) {
+  gSalidaBle = escribir;
+  gSalidaBleActiva = activa;
+}
+
+void protocolEstadoBle(ProtocolEstadoFn rellenar) { gEstadoBle = rellenar; }
+
+void protocolHostOut(const char *linea) {
+  if (linea == nullptr || linea[0] == '\0') return;
+  salidaCruda(linea, strlen(linea));
+  salidaCruda("\n", 1);
+}
+
+void protocolHostWrite(const char *texto, size_t n) { salidaCruda(texto, n); }
+
+/* Deja salir lo que este en la cola del enlace. Solo lo llama el reinicio: hay que avisar
+   ANTES de resetear, y por Bluetooth el aviso tarda unos milisegundos en salir. Es una espera
+   CORTA Y FINITA: si el enlace esta atascado se pierde el aviso, pero el nodo no se cuelga. */
+void protocolFlushSalida() {
+  if (gOrigen != Origen::Ble || gSalidaBle == nullptr || !gSalidaBleActiva) {
+    Serial.flush();
+    return;
+  }
+  // 400 ms de margen para vaciar la cola de avisos antes de resetear.
+  gSalidaBle(nullptr, 0, 400);
+}
+
+Origen configProtocolOrigen() { return gOrigen; }
+
+/* ★★ LOS BYTES DEL BLUETOOTH ENTRAN POR AQUI (2026-09-17) ★★
+   El enlace Bluetooth (ble_kiss.cpp) llama a esto desde `bleLoop()`, con el trozo que le acaba
+   de escribir el huesped. NO hay un segundo parser: los bytes van al MISMO receptor de lineas
+   que los del cable, con la unica diferencia de que van marcados como Bluetooth (para que la
+   respuesta salga por el aire) y de que NO se le ofrecen al TNC (el KISS es del cable: ver
+   usb_lector.h). El troceado y el despacho son exactamente los mismos. */
+/* ★★ LOS BYTES DEL BLUETOOTH ENTRAN POR AQUI (2026-09-17) ★★
+   El enlace Bluetooth (ble_kiss.cpp) llama a esto desde `bleLoop()`, con el trozo que le acaba
+   de escribir el huesped. NO hay un segundo parser: los bytes van al MISMO receptor de lineas
+   que los del cable, con la unica diferencia de que van marcados como Bluetooth (para que la
+   respuesta salga por el aire) y de que NO se le ofrecen al TNC (el KISS es del cable: ver
+   usb_lector.h). El troceado y el despacho son exactamente los mismos.
+
+   El puntero al protocolo lo deja `configProtocolBind()`, que llama main.cpp UNA vez al
+   arrancar: el protocolo es un objeto global de main.cpp y este fichero no tiene por que
+   conocerlo. */
+namespace {
+ConfigProtocol *gProtocol = nullptr;
+uint32_t gBleAnilloPerdidos = 0;
+}  // namespace
+
+void configProtocolBind(ConfigProtocol *p) { gProtocol = p; }
+
+bool configProtocolEmpujaBle(const uint8_t *datos, size_t n) {
+  if (gProtocol == nullptr) return false;
+  return gProtocol->empujaBle(datos, n);
+}
+
+void configProtocolOlvidaLineaBle() {
+  if (gProtocol == nullptr) return;
+  gProtocol->olvidaLineaBle();
+}
+
+uint32_t bleAnilloPerdidos() { return gBleAnilloPerdidos; }
+
+void bleHostFeed(const uint8_t *datos, size_t n) {
+  if (datos == nullptr || n == 0) return;
+  // Se empuja al anillo del lector. El troceado de lineas NO ocurre aqui: ocurre en el unico
+  // sitio que interpreta bytes (`UsbLector::meteByte`), cuando el bucle llama a `atiende()`,
+  // que es esa misma vuelta un poco mas abajo en main.cpp. Asi una orden del Bluetooth nunca
+  // se ejecuta dentro de la tarea del SoftDevice.
+  if (!configProtocolEmpujaBle(datos, n)) {
+    // Anillo lleno (una linea larguisima a medias): se cuenta y se deja dicho. NO se ejecuta
+    // nada con la linea cortada.
+    gBleAnilloPerdidos++;
+  }
+}
 
 /* ★★ LEER Y ENCOLAR: LA PUERTA DEL DRIVER DE LA PANTALLA (T-Echo Project Butter II) ★★
    Esto es lo unico que el driver de la tinta puede llamar del protocolo. Saca del puerto lo
@@ -182,11 +282,15 @@ void ConfigProtocol::feed(Stream &s) {
   gUsbDentro = lector_.ejecutadasEnBombeo();   // red de seguridad: tiene que ser 0
 }
 
-// El lector nos da una linea completa (ya sin CR/LF). Mismo orden que el feed() de antes:
-// primero se la ofrece al TNC (una trama TNC2 la manda el TNC, no el parser JSON/CLI) y, si
-// no era una trama, va al parser de siempre.
-void ConfigProtocol::lineaRecibida(const char *linea, size_t n) {
+// El lector nos da una linea completa (ya sin CR/LF) y de donde viene. Mismo orden que el
+// feed() de antes: primero se la ofrece al TNC (una trama TNC2 la manda el TNC, no el parser
+// JSON/CLI) y, si no era una trama, va al parser de siempre.
+void ConfigProtocol::lineaRecibida(const char *linea, size_t n, Origen origen) {
   (void)n;  // el lector ya la deja terminada en cero
+  // ★ PRIMERO EL ORIGEN, y no es un detalle: el despacho de abajo ya contesta, y la respuesta
+  //   tiene que salir por donde entro el comando (ver protocolHostOut).
+  origen_ = origen;
+  gOrigen = origen;
   // ★ ORDEN EXACTO DEL feed() DE ANTES: primero se le ofrece al TNC (una trama TNC2 la
   //   manda el TNC, no el parser JSON/CLI) y, si no era una trama, va al parser de
   //   siempre. La comprobacion del TNC solo se hace si hay puente TNC2 encendido: asi el
@@ -204,17 +308,19 @@ bool ConfigProtocol::hookTnc(void *ctx, uint8_t b) {
   return tncHandleUsbByte(b);   // la regla del 0xC0 (KISS): no se toca
 }
 
-void ConfigProtocol::hookLinea(void *ctx, const char *linea, size_t n) {
-  static_cast<ConfigProtocol *>(ctx)->lineaRecibida(linea, n);
+void ConfigProtocol::hookLinea(void *ctx, const char *linea, size_t n, Origen origen) {
+  static_cast<ConfigProtocol *>(ctx)->lineaRecibida(linea, n, origen);
 }
 
 
-void ConfigProtocol::sendLine(const String &s) { Serial.println(s); }
+// ★ LA RESPUESTA SALE POR DONDE ENTRO EL COMANDO (ver protocolHostOut en la cabecera). Son
+//   las dos unicas puertas de salida del protocolo: el cable y el Bluetooth.
+void ConfigProtocol::sendLine(const String &s) { protocolHostOut(s.c_str()); }
 
 static void sendJsonDoc(JsonDocument &doc) {
   String out;
   serializeJson(doc, out);
-  Serial.println(out);
+  protocolHostOut(out.c_str());
 }
 
 void ConfigProtocol::replyOkWithConfig(bool persisted) {
@@ -254,6 +360,11 @@ void ConfigProtocol::replyStatus() {
     usb["tirados"] = gUsbTirados;
   }
   doc["status"]["uptimeMs"] = millis();
+  // ★ PLACA (2026-09-21): "T-Echo" / "Faketec HT-RA62" / "Faketec E22P". El configurador
+  //   web la usa para PROPONER los valores recomendados buenos de cada aparato (sobre todo
+  //   los umbrales de bateria, que no son los mismos). Antes no habia forma de saberlo y
+  //   recomendaba los de la Faketec a todo el mundo. Ver radio.h (boardName()).
+  doc["status"]["board"] = boardName();
   JsonObject radio = doc["status"]["radio"].to<JsonObject>();
   radio["module"] = radioModuleName();  // "HT-RA62" / "E22P" (web: power limits)
   radio["state"] = radioState();
@@ -282,6 +393,17 @@ void ConfigProtocol::replyStatus() {
   sensors["inaMa"] = gSensorCache.inaCurrentMa;
   doc["status"]["display"] = displayPresent();
   doc["status"]["diag"] = diagStreaming();
+
+  // ★★ ESTADO DEL ENLACE BLUETOOTH (2026-09-17) ★★
+  //   Lo rellena el propio enlace (registra su funcion al arrancar, ver protocolEstadoBle), para
+  //   que se pueda comprobar DESDE EL NODO si el Bluetooth anuncia, si hay huesped y si el PIN
+  //   se esta pidiendo. `canal` lo pone el protocolo: es el dato que distingue "me contesta por
+  //   el cable" de "me contesta por el aire".
+  {
+    JsonObject ble = doc["status"]["ble"].to<JsonObject>();
+    ble["canal"] = (configProtocolOrigen() == Origen::Ble) ? "ble" : "usb";
+    if (gEstadoBle != nullptr) gEstadoBle(ble);
+  }
 
   // GPS: the web configurator offers "use the GPS coordinates" for a fixed
   // digipeater and shows whether the module has a fix yet.
@@ -405,14 +527,17 @@ void ConfigProtocol::replyError(const char *err) {
 void ConfigProtocol::handleLine(const char *line) {
   if (line == nullptr || line[0] == '\0') return;
 
+  // ★ DE DONDE VIENE ESTA ORDEN (2026-09-17). Manda en dos cosas:
+  //   1) por donde sale la respuesta (ver protocolHostOut);
+  //   2) el modo grabacion: `dfu` se RECHAZA por Bluetooth, porque nadie podria terminar la
+  //      grabacion (el cargador UF2 se maneja copiando un fichero por el cable).
+  const Origen origen = origen_;
+
   // Hybrid (operator decision): a line that does NOT start with '{' is a
   // NavaCLI-style token command -> human-readable text reply (cli.cpp).
   if (line[0] != '{') {
-    String t = cliExecute(cfg_, line, false);
-    if (t.length() > 0) {
-      Serial.print(t);
-      Serial.println();
-    }
+    String t = cliExecute(cfg_, line, cliOrigenDe(origen));
+    if (t.length() > 0) sendLine(t);
     return;
   }
 
@@ -423,6 +548,18 @@ void ConfigProtocol::handleLine(const char *line) {
     return;
   }
   const char *cmd = doc["cmd"] | "";
+  // ★★ EL MODO GRABACION NO SE MANDA POR BLUETOOTH (orden del operador, 2026-09-17) ★★
+  //   POR QUE: `dfu` reinicia el nodo en el cargador UF2, y el cargador se maneja copiando un
+  //   fichero en una unidad que solo existe con el cable puesto. Si la orden llega por
+  //   Bluetooth, el nodo se reinicia, DEJA DE EXISTIR como nodo y ya no hay forma de completar
+  //   nada por el aire: se queda fuera de juego hasta que alguien le enchufe un cable. Por eso
+  //   se rechaza con un motivo claro en vez de obedecer. Por USB, igual que siempre.
+  if (strcmp(cmd, "dfu") == 0 && origen == Origen::Ble) {
+    replyError(
+        "el modo grabacion necesita el cable USB: no se puede completar por Bluetooth "
+        "(usa el cable)");
+    return;
+  }
   if (strcmp(cmd, "get") == 0) {
     replyGet();
   } else if (strcmp(cmd, "status") == 0) {
@@ -433,8 +570,11 @@ void ConfigProtocol::handleLine(const char *line) {
     // configuracion, asi que "reset" ya NO puede borrar nada. El borrado de
     // fabrica vive en "factory_reset" (siguiente rama). Mismo patron que el
     // verbo "reboot confirm" del CLI: avisar, vaciar el serial y resetear.
-    Serial.println("REBOOT");
-    Serial.flush();
+    protocolHostOut("REBOOT");
+    // ★ El aviso sale por donde entro la orden (cable o Bluetooth) y se le da un respiro
+    //   CORTO Y FINITO para que llegue antes del reinicio: por Bluetooth un aviso tarda unos
+    //   milisegundos en salir de la cola. NO se espera a que el huesped lo lea.
+    protocolFlushSalida();
     delay(100);
     NVIC_SystemReset();
   } else if (strcmp(cmd, "factory_reset") == 0) {
