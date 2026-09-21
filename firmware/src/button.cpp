@@ -350,6 +350,17 @@ void buttonInit() {
   gTxValida = false;
   gTxDesde = gTxHasta = 0;
 
+  /* ★★ SIN RESISTENCIA INTERNA: COMO EL FIRMWARE DE REFERENCIA (2026-09-21) ★★
+     Aqui ponia `pinMode(PIN_BTN_TOUCH, INPUT_PULLUP)`. El firmware del aleman (cfr34k), que
+     funciona en esta misma placa, configura la pastilla capacitiva asi:
+         {PIN_BTN_TOUCH, APP_BUTTON_ACTIVE_LOW, NRF_GPIO_PIN_NOPULL, cb_app_button}
+     o sea SIN pull (NOPULL). Y tiene sentido: en una pastilla capacitiva, meterle una
+     resistencia de subida interna puede cargar el pad y MATAR LA SENSIBILIDAD: la pastilla
+     mueve muy poca carga y la resistencia se la come.
+     Lo que decidimos nosotros ("activa en bajo con pull-up") salio de una MEDIDA de una
+     unidad, no del fabricante; el aleman dice NOPULL y su firmware es el que funciona.
+     SI ALGUNA UNIDAD SE QUEDA CON EL TOQUE PEGADO con esto, el arreglo es volver a PULLUP
+     (es una linea) — pero antes se prueba como lo hace el que funciona. */
   pinMode(PIN_BTN_TOUCH, INPUT_PULLUP);
   buzonMete(gToque, digitalRead(PIN_BTN_TOUCH) == kToqueActivo, millis());
   attachInterrupt(digitalPinToInterrupt(PIN_BTN_TOUCH), isrToque, CHANGE);

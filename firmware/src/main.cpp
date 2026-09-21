@@ -266,20 +266,17 @@ static void drainButton() { handleButton(); }
 
 void setup() {
   Serial.begin(115200);
-  /* ★★★ LA ESPERA QUE HACE EL BANCO Y NOSOTROS NO (b48, 2026-09-17) ★★★
-     El unico firmware que ARRANCA el SoftDevice en esta placa (el banco de diagnostico,
-     `diag_ble`) hace esto antes de tocarlo:
-
-         Serial.begin(115200);
-         esperaCable(2500);        <-- ESPERA 2,5 SEGUNDOS
-
-     Y nosotros arrancabamos el Bluetooth inmediatamente. El SoftDevice **se reserva el
-     periferico POWER, que es el del USB**, y en esos primeros milisegundos el USB se esta
-     enumerando (llegan eventos de VBUS, TinyUSB levanta el pull-up...). Que el banco espere y
-     funcione, y nosotros no esperemos y nos caigamos, es la diferencia mas simple que queda
-     por probar. Si esta espera arregla el arranque, el arreglo es este; si no, se quita y se
-     sigue bisecando: no rompe nada. */
-  delay(2500);
+  /* ★★★ LA ESPERA DEL ARRANQUE: 500 ms, LOS MISMOS QUE LA VERSION QUE FUNCIONA ★★★
+     (2026-09-21) Aqui se probo a poner 2500 ms copiando lo que hace el banco de diagnostico
+     del Bluetooth (`diag_ble`), con la idea de que el SoftDevice necesita que el USB termine
+     de enumerarse. DURANTE UNOS DIAS ESTUVO ASI... y se colo en el firmware publicado, que
+     es el que dejo al operador SIN PANTALLA Y SIN TACTIL.
+     QUE SE HA MEDIDO: el b13 (el que funciona) lleva `delay(500)`. Con 2500 ms, el tactil
+     capacitivo no responde. Asi que se vuelve a los 500 ms y NO SE VUELVE A SUBIR SIN
+     MEDIRLO: es una espera que se paga EN CADA ARRANQUE y que ya nos ha costado una tarde.
+     (El Bluetooth necesita su espera, si algun dia vuelve: se hara DENTRO de su arranque,
+     no aqui, para que no la pague todo el firmware.) */
+  delay(500);
   configSetDefaults(gConfig);
   const bool hayConfig = storeLoad(gConfig);
   aprsBindConfig(&gConfig);

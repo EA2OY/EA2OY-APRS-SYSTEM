@@ -684,19 +684,18 @@ void epdInitPanel(bool parcial) {
 void epdRefresca(bool parcial, const uint8_t *bufAnterior, const uint8_t *bufActual) {
   const uint32_t t0 = millis();
 
-  // ★★ VELOCIDAD (2026-09-21): AQUI SE PERDIAN 300 ms EN CADA REFRESCO ★★
-  //   En ESTA unidad BUSY no informa (ver el comentario de epdEsperaBusy: se queda clavado y
-  //   siempre vence el tope), asi que esta llamada NO esperaba a nada: gastaba sus 300 ms y
-  //   seguia. Y encima su tope esta pensado como red de seguridad contra un panel que aun
-  //   esta trabajando, cosa que aqui no se puede detectar.
-  //   QUE SE HACE: intentar el sondeo con un tope CORTO. Si algun dia BUSY informa en esta
-  //   placa (o en otra unidad), se aprovecha y esto funciona como se penso; si no informa
-  //   (lo de hoy), se pierden 12 ms en vez de 300.
-  //   POR QUE NO SE QUITA DEL TODO: "en esta unidad no informa" es un dato de ESTE aparato.
-  //   El dia que una unidad si informe, saltarse la espera seria empezar un refresco encima
-  //   del anterior, y eso si se ve en la tinta.
-  constexpr uint32_t kSondeoBusyRapidoMs = 12;
-  epdEsperaBusy(kSondeoBusyRapidoMs);
+  // ★★ VUELTA ATRAS DEL 2026-09-21 (¡y esto hay que leerlo!) ★★
+  //   Aqui se probo a bajar esta espera de 300 ms a 12 ms, con el argumento de que en esta
+  //   unidad BUSY no informa y por tanto la espera "no esperaba a nada".
+  //   RESULTADO MEDIDO EN LA PLACA DEL OPERADOR: con el firmware nuevo LA PANTALLA SE QUEDO
+  //   EN NEGRO y EL TACTIL DEJO DE RESPONDER. El tactil solo se atiende DURANTE los refrescos
+  //   (el driver bombea el boton en sus esperas, ver ePDBombea), asi que si el refresco se
+  //   atasca, el tactil se queda mudo con el. Se sospecha que estas esperas SON la red que
+  //   evita empezar un refresco encima de otro cuando BUSY no informa.
+  //   O SEA: la deduccion "BUSY no informa, luego no hace falta esperar" ERA FALSA. La espera
+  //   sirve aunque BUSY no diga nada. NO SE VUELVE A TOCAR ESTO SIN MEDIRLO EN UNA PLACA.
+  constexpr uint32_t kEsperaPreviaBusyMs = 300;
+  epdEsperaBusy(kEsperaPreviaBusyMs);
 
   epdInitPanel(parcial);
 
@@ -715,15 +714,12 @@ void epdRefresca(bool parcial, const uint8_t *bufAnterior, const uint8_t *bufAct
   // 200 ms de espera a que el panel levante las tensiones. Se bombea el boton mientras.
   // ★ T-ECHO PROJECT BUTTER: era un `delay(200)` a secas, o sea 200 ms mas de ventana
   //   ciega para los toques (y esta espera la paga CADA refresco).
-  // ★★ VELOCIDAD (2026-09-21): AHORA NO ES UNA ESPERA A CIEGAS, ES UN SONDEO CON TOPE ★★
-  //   Se espera a que BUSY suelte, con tope. En esta unidad BUSY no informa, asi que vence
-  //   el tope y se sigue (y el tope es corto a proposito). Si algun dia informa, esto se
-  //   convierte en la espera buena, que es lo que se pretendia desde el principio.
-  //   POR QUE EL TOPE ES CORTO Y NO 0: las tensiones del panel se encienden con 0x20 y el
-  //   controlador tarda un poco. Con BUSY mudo no hay forma de saber cuando acabo, asi que
-  //   se deja un margen prudente. Si el parcial saliera sucio en alguna unidad, ESTE es el
-  //   primer numero que hay que subir (y esta escrito aqui para no volver a buscarlo).
-  constexpr uint32_t kEsperaTensionesMs = 40;
+  // ★★ VUELTA ATRAS DEL 2026-09-21 ★★ Aqui se probo a convertir esto en un sondeo de BUSY
+  //   con tope corto (40 ms) y LA PANTALLA SE QUEDO EN NEGRO en la placa del operador: las
+  //   tensiones NO estaban puestas cuando llegaba la orden de refrescar. El tope corto era
+  //   una suposicion, no una medida. Se vuelve a los 200 ms de siempre y NO SE TOCA SIN
+  //   MEDIRLO EN UNA PLACA (con esto ajustable desde el cable, cuando se haga).
+  constexpr uint32_t kEsperaTensionesMs = 200;
   epdEsperaBusy(kEsperaTensionesMs);
 
   // (2) LOS DOS PLANOS, EN EL ORDEN DEL DE REFERENCIA: 0x26 (anterior) y despues 0x24
@@ -1136,15 +1132,11 @@ constexpr uint32_t kDebounceToqueMs = 400;  // si tocas antes de esto, no repint
 // El BOTON FISICO ya no lo escribe: su toque corto solo existe cuando han pasado 600 ms
 // desde que solto (la ventana del doble), asi que nunca llega en rafaga y aplazarle el
 // repintado 400 ms era LATENCIA PURA (medida: 400 ms de nada antes de empezar a pintar).
-// ★ VELOCIDAD (2026-09-21): de 400 a 250 ms. POR QUE SE PUEDE BAJAR: esta ventana existe
-//   para que una rafaga de toques NO pague un repintado por cada uno, y su tamano tiene
-//   sentido EN PROPORCION al tiempo que tarda un repintado. Al quitarle al refresco los
-//   ~460 ms que se perdian en esperas (ver epdRefresca), la ventana de 400 ms se quedo
-//   grande: hacia esperar mas de lo que tarda el propio panel en pintar. Con 250 ms se
-//   siguen agrupando los toques seguidos (el tactil puede encadenar uno cada ~150 ms) y el
-//   ultimo se pinta antes. Si alguien vuelve a tocar MUY rapido y ve repintados de mas,
-//   este es el numero que hay que subir.
-constexpr uint32_t kAgrupaToquesMs = 250;   // solo tactil: espera a que dejes de tocar
+// ★ VUELTA ATRAS DEL 2026-09-21: de 250 a 400 ms otra vez. Se habia bajado a 250 ms dando
+//   por hecho que el refresco iba a ser mas rapido (se le habian quitado dos esperas), pero
+//   esas esperas RESULTARON NECESARIAS y se han restaurado: sin ellas la pantalla se queda
+//   en negro. Asi que la ventana vuelve a su valor, que es el que estaba medido y probado.
+constexpr uint32_t kAgrupaToquesMs = 400;   // solo tactil: espera a que dejes de tocar
 uint32_t gUltimoToqueAgrupaMs = 0;
 constexpr uint8_t kNumEscenas = 8;
 uint8_t gEscena = 0;
