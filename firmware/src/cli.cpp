@@ -13,6 +13,7 @@
 
 #include "aprs.h"
 #include "ble_kiss.h"   // bleResumen() para el comando de taller `ble`
+#include "button.h"     // buttonResumen() y buttonLostEdges() para el comando `tactil`
 #include "diag.h"
 #include "display.h"
 #include "flog.h"
@@ -476,6 +477,34 @@ String cliExecute(DigiConfig &cfg, const char *line, CliOrigen origen) {
     snprintf(cb, sizeof(cb), "CAP: PIN_BTN_TOUCH no definido en esta placa");
 #endif
     return cb;
+  }
+  if (verb == "TACTIL") {
+    // ★★ POR QUE SE PERDIO EL TOQUE (2026-09-21, herramienta de taller) ★★
+    // El operador dice que "a veces no coge los toques". Un toque puede caerse por cuatro
+    // motivos distintos y ninguno dejaba rastro: esto los saca todos juntos. Se llama
+    // DESPUES de haber tocado, y lo que salga dice quien es el culpable:
+    //   ok   sube            -> el tactil funciona; si la accion no se ve, es la PANTALLA
+    //   rf   sube            -> el toque cayo mientras el nodo transmitia (o su cola)
+    //   bloq sube            -> toques demasiado seguidos (bloqueo de 120 ms)
+    //   tarde sube           -> pico corto que empezo y acabo sin que el bucle mirara
+    // Se puede llamar las veces que haga falta: es un contador, no se reinicia solo.
+    static char tb[140];
+    buttonResumen(tb, sizeof(tb));
+    return tb;
+  }
+  if (verb == "EPDVENTANA") {
+    // ★ Refresco con VENTANA (2026-09-21): solo se mandan al panel las filas que cambian.
+    //     epdventana 1 -> ventana (por defecto; menos bytes y menos rato sin mirar el boton)
+    //     epdventana 0 -> pantalla entera, el camino de siempre (vuelta atras en caliente)
+    // La 'w' minuscula inicial es la senal para epaper_techo.cpp.
+    static char wb[4];
+    wb[0] = 'w';
+    wb[1] = (rest == "0") ? '0' : '1';
+    displayDiagTexto(wb, sizeof(wb));
+    static char wr[32];
+    snprintf(wr, sizeof(wr), "EPD ventana = %s",
+             (wb[1] == '1') ? "si (solo lo que cambia)" : "no (pantalla entera)");
+    return wr;
   }
   if (verb == "LOG") {
     // Trip log stored in flash (survives power cycles).

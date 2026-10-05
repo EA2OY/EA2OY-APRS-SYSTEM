@@ -450,9 +450,175 @@ void ConfigProtocol::handleDiag(const JsonVariantConst &body) {
   sendJsonDoc(doc);
 }
 
+// ===========================================================================
+//  ★★ TRASPASO DE TRACKS POR USB (2026-09-22) ★★
+//
+//  QUE HACE: el configurador web le manda al nodo una ruta (un GPX de WikiLoc ya simplificado)
+//  para dejarla en una de las 5 ranuras. Despues el nodo la puede guiar.
+//
+//  ★★ POR QUE EN TROZOS, Y NO DE UNA VEZ ★★
+//    Una linea del cable tiene un TOPE DE 4096 BYTES (`UsbLector::kMaxLinea`), y una ranura son
+//    2.040 puntos x 10 bytes = 20 KB. No cabe ni de lejos. Ademas la flash se escribe por
+//    palabras y una pagina entera son ~28 ms: si se metiera todo de golpe, el puerto se
+//    atascaria mientras se escribe (la leccion del USB que se muere, ya pagada en este
+//    proyecto).
+//    Asi que: TROZOS PEQUENOS Y CADA UNO SE ESCRIBE AL LLEGAR. El puerto nunca se queda sin
+//    atender mas de lo que dura un trozo, y el configurador puede ensenar el progreso.
+//
+//  LOS TRES COMANDOS, y por que son tres:
+//    {"cmd":"track_begin","slot":1,"puntos":2040,"year":..,"month":..,"day":..,"hour":..,
+//     "minute":..}                        -> borra la ranura y apunta la cabecera
+//    {"cmd":"track_chunk","desde":0,"pts":[[lat,lon,alt],[...]]}   -> escribe los puntos
+//    {"cmd":"track_end"}                 -> confirma que la ranura es buena
+//
+//  ★ SE DICE "desde" EN CADA TROZO, y no se lleva la cuenta en el nodo: asi, si un trozo se
+//    pierde o llega repetido, el configurador puede reenviarlo por su numero y la ranura queda
+//    bien. Un contador interno se desincronizaria en silencio y el track quedaria torcido.
+//
+//  ★ Y SE COMPRUEBA TODO: el slot, el numero de puntos (que quepa, NO se recorta), y que los
+//    indices esten dentro. Si algo no cuadra se responde con el motivo y NO se escribe: un
+//    track a medias es peor que un track que no esta.
+// ===========================================================================
+#ifdef TRACKS_DISPONIBLE
+
+void ConfigProtocol::handleTrackInicio(const JsonDocument &doc) {
+  const int slot = doc["slot"] | -1;
+  const int puntos = doc["puntos"] | 0;
+  if (slot < 0 || slot >= (int)TRACK_SLOTS) {
+    replyError("slot fuera de rango (0..4)");
+    return;
+  }
+  // ★ EL TOPE SE LE DICE AL USUARIO, no se recorta: si el track no cabe, el configurador tiene
+  //   que simplificarlo mas o avisar. Recortarlo en silencio le dejaria una ruta incompleta
+  //   creyendo que esta entera, y en el monte eso se paga.
+  if (puntos < 2 || puntos > (int)TRACK_SLOT_PUNTOS) {
+    char err[64];
+    snprintf(err, sizeof err, "no caben %d puntos (el tope de una ranura es %d)", puntos,
+             (int)TRACK_SLOT_PUNTOS);
+    replyError(err);
+    return;
+  }
+  TrackRanuraInfo meta{};
+  meta.year   = (uint16_t)(doc["year"] | 0);
+  meta.month  = (uint8_t)(doc["month"] | 0);
+  meta.day    = (uint8_t)(doc["day"] | 0);
+  meta.hour   = (uint8_t)(doc["hour"] | 0);
+  meta.minute = (uint8_t)(doc["minute"] | 0);
+  if (!tracksRanuraEmpieza((uint8_t)slot, (uint16_t)puntos, &meta)) {
+    replyError("no se pudo preparar la ranura");
+    return;
+  }
+  JsonDocument out;
+  out["ok"] = true;
+  out["slot"] = slot;
+  out["puntos"] = puntos;
+  out["tope"] = (int)TRACK_SLOT_PUNTOS;
+  sendJsonDoc(out);
+}
+
+void ConfigProtocol::handleTrackTrozo(const JsonDocument &doc) {
+  const int slot = doc["slot"] | -1;
+  const int desde = doc["desde"] | -1;
+  JsonArrayConst pts = doc["pts"].as<JsonArrayConst>();
+  if (slot < 0 || slot >= (int)TRACK_SLOTS) { replyError("slot fuera de rango (0..4)"); return; }
+  if (desde < 0 || pts.isNull() || pts.size() == 0) {
+    replyError("trozo sin puntos o sin 'desde'");
+    return;
+  }
+  uint32_t i = (uint32_t)desde;
+  uint32_t escritos = 0;
+  for (JsonArrayConst p : pts) {
+    if (p.size() < 3) { replyError("punto con menos de 3 numeros"); return; }
+    TrackPunto tp;
+    // ★ Los grados se mandan como numero decimal y aqui se pasan a enteros de 1e7: es la MISMA
+    //   unidad que se guarda en la flash, asi que no hay perdida anadida.
+    tp.lat1e7 = (int32_t)llround((p[0].as<double>()) * 1e7);
+    tp.lon1e7 = (int32_t)llround((p[1].as<double>()) * 1e7);
+    const long a = lround(p[2].as<double>());
+    tp.altM = (int16_t)(a > 32767 ? 32767 : (a < -32768 ? -32768 : a));
+    if (!tracksRanuraEscribe((uint8_t)slot, i, &tp)) {
+      // Si el indice se sale, se corta aqui y se dice CUANTOS entraron: el configurador sabe
+      // exactamente por donde iba y puede corregir sin empezar de cero.
+      JsonDocument out;
+      out["ok"] = false;
+      out["err"] = "indice fuera de la ranura";
+      out["escritos"] = escritos;
+      out["desde"] = desde;
+      sendJsonDoc(out);
+      return;
+    }
+    i++; escritos++;
+  }
+  JsonDocument out;
+  out["ok"] = true;
+  out["escritos"] = escritos;
+  out["siguiente"] = i;
+  sendJsonDoc(out);
+}
+
+void ConfigProtocol::handleTrackFin(const JsonDocument &doc) {
+  const int slot = doc["slot"] | -1;
+  if (slot < 0 || slot >= (int)TRACK_SLOTS) { replyError("slot fuera de rango (0..4)"); return; }
+  // ★ BORRAR UNA RANURA (2026-09-22): el configurador manda `track_end` con `borrar:true` en
+  //   vez de un comando aparte. Es a proposito: borrar es "terminar la ranura sin puntos", asi
+  //   que no hace falta un quinto comando ni el configurador tiene que conocer dos caminos.
+  //   Y no se borran las 5 paginas: basta con quitar el magico de la cabecera, que es lo que
+  //   hace `tracksRanuraBorra` (una sola pagina, ~28 ms en vez de ~140).
+  if (doc["borrar"] | false) {
+    tracksRanuraBorra((uint8_t)slot);
+    JsonDocument out;
+    out["ok"] = true;
+    out["slot"] = slot;
+    out["borrada"] = true;
+    sendJsonDoc(out);
+    return;
+  }
+  if (!tracksRanuraTermina((uint8_t)slot)) {
+    replyError("la ranura no quedo bien: vuelve a mandar el track");
+    return;
+  }
+  TrackRanuraInfo inf;
+  tracksRanuraInfo((uint8_t)slot, &inf);
+  JsonDocument out;
+  out["ok"] = true;
+  out["slot"] = slot;
+  out["puntos"] = inf.puntos;
+  out["valida"] = inf.valida;
+  sendJsonDoc(out);
+}
+
+// La lista de ranuras: la usa el configurador para ensenar que hay cargado sin tener que
+// preguntar por cada una.
+void ConfigProtocol::handleTrackLista() {
+  JsonDocument out;
+  out["ok"] = true;
+  out["topePorRanura"] = (int)TRACK_SLOT_PUNTOS;
+  out["puntosVivo"] = (unsigned long)tracksVivoPuntos();
+  out["vivoDioLaVuelta"] = tracksVivoDioLaVuelta();
+  JsonArray arr = out["ranuras"].to<JsonArray>();
+  for (uint8_t s = 0; s < TRACK_SLOTS; s++) {
+    TrackRanuraInfo inf;
+    tracksRanuraInfo(s, &inf);
+    JsonObject o = arr.add<JsonObject>();
+    o["slot"] = s;
+    o["valida"] = inf.valida;
+    o["puntos"] = inf.valida ? inf.puntos : 0;
+    if (inf.valida) {
+      char f[24];
+      snprintf(f, sizeof f, "%02u/%02u %02u:%02u", (unsigned)inf.day, (unsigned)inf.month,
+               (unsigned)inf.hour, (unsigned)inf.minute);
+      o["cuando"] = f;
+    }
+  }
+  sendJsonDoc(out);
+}
+
+#endif  // TRACKS_DISPONIBLE
+
 void ConfigProtocol::handleBeacon() {
   // Mode 0 (fixed digipeater): without a callsign and a configured position there is
   // nothing to send, and that is an error worth saying out loud ("beacon not
+  // configured").
   // configured").
   //
   // ★★ EN MODO RASTREADOR (1/2) LA ORDEN LLEGA SIEMPRE, Y DECIDE aprsSendManualBeacon()
@@ -630,6 +796,34 @@ void ConfigProtocol::handleLine(const char *line) {
     radioSetMuted(cfg_.txDisabled);
     radioApplyPower(cfg_.powerDbm);
     replyOkWithConfig(p);
+  } else if (strcmp(cmd, "track_begin") == 0) {
+    // ★★ TRASPASO DE TRACKS (2026-09-22). Los cuatro comandos contestan lo MISMO en las placas
+    //   que no son T-Echo: con el motivo, no con un "unknown cmd". Un "unknown cmd" haria
+    //   pensar al configurador que el protocolo esta mal, cuando lo que pasa es que esa placa
+    //   no tiene tracks (ver tracks.h).
+#ifdef TRACKS_DISPONIBLE
+    // ★★ TRASPASO DE TRACKS (2026-09-22) ★★ Ver la explicacion larga junto a sus manejadores.
+    //   OJO AL LEER EL BINARIO: las cadenas "track_begin"/"track_chunk"/... son argumentos de
+    //   `strcmp` y por tanto estan FUERA del `#ifdef`, asi que APARECEN EN TODOS los binarios
+    //   aunque la placa no tenga tracks. Buscarlas para comprobar que "esta" este codigo enganna:
+    //   lo que de verdad distingue a un T-Echo es que esten sus MANEJADORES.
+  } else if (strcmp(cmd, "track_begin") == 0) {
+    handleTrackInicio(doc);
+  } else if (strcmp(cmd, "track_chunk") == 0) {
+    handleTrackTrozo(doc);
+  } else if (strcmp(cmd, "track_end") == 0) {
+    handleTrackFin(doc);
+  } else if (strcmp(cmd, "track_list") == 0) {
+    handleTrackLista();
+#else
+    // En las placas sin tracks (las Faketec: su mapa de memoria no se ha comprobado, ver
+    // tracks.h) los cuatro comandos contestan lo MISMO y con el motivo. Un "unknown cmd" haria
+    // pensar al configurador que el protocolo esta mal, cuando lo que pasa es que esa placa no
+    // tiene tracks. Se comprueba en UNA rama en vez de en cuatro para no repetir el mensaje.
+  } else if (strcmp(cmd, "track_begin") == 0 || strcmp(cmd, "track_chunk") == 0 ||
+             strcmp(cmd, "track_end") == 0 || strcmp(cmd, "track_list") == 0) {
+    replyError("los tracks solo existen en el T-Echo");
+#endif
   } else {
     replyError("unknown cmd");
   }

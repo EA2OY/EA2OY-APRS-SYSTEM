@@ -81,10 +81,21 @@
 #include <string.h>     // strcmp/strncpy/strchr: el fichero ya los usaba sin incluirlo
 
 #include "epd_font5x7.h"
+// â˜…â˜… LA FUENTE DIN 10pt, DE ANCHO VARIABLE (2026-09-22) â˜…â˜…
+//   Es la que trae el firmware aleman (licencia MIT, aviso de copyright dentro del fichero). Se
+//   usa para el TERCER tamano de letra (escala 0): tiene la misma altura que la escala 2 (14 px)
+//   pero es mas estrecha, que es justo lo que hacia falta para que los titulos luzcan sin que los
+//   textos largos se salgan del panel. Ver epd_font_din10.h.
+#include "epd_font_din10.h"
 #include "flog.h"
 #include "gps.h"
 #include "haptic.h"
 #include "pins_board.h"
+// â˜… Solo para buttonUltimoToqueConfirmado(): el SELLO de cuando se confirmo el ultimo toque.
+//   Es lo unico que el driver puede saber del boton. NO se usan aqui las funciones de la cola
+//   de toques (buttonTouchPoll / buttonTouchPending): esa cola es del bucle, y quitarsela de
+//   las manos fue el fallo del b77/b78. Ver el comentario largo del aplazamiento, mas abajo.
+#include "button.h"
 #include "power.h"
 #include "radio.h"
 #include "aprs.h"
@@ -94,6 +105,7 @@
 #include "store.h"
 #include "tnc.h"
 #include "tracker.h"
+#include "tracks.h"     // modulo de tracks: solo existe en el T-Echo (ver tracks.h)
 #include <RadioLib.h>
 
 namespace {
@@ -116,7 +128,7 @@ constexpr int PIN_BUSY = PIN_EPD_BUSY;  // P0.03
 // bit a 0 = NEGRO.
 uint8_t gBuf[EPD_BUFSZ];
 
-// ★★ EL PLANO ANTERIOR: LA CLAVE DEL REFRESCO PARCIAL (Paso 1, 2026-09-15) ★★
+// â˜…â˜… EL PLANO ANTERIOR: LA CLAVE DEL REFRESCO PARCIAL (Paso 1, 2026-09-15) â˜…â˜…
 //
 // El SSD1681 tiene DOS memorias de imagen: la "actual" (comando 0x24) y la "anterior"
 // (comando 0x26). Al refrescar, el controlador LAS COMPARA y solo mueve los pixeles que
@@ -132,10 +144,55 @@ uint8_t gBuf[EPD_BUFSZ];
 uint8_t gBufPrev[EPD_BUFSZ];
 bool gPrevValido = false;
 
-// ★ REFRESCO COMPLETO FORZADO (quita los fantasmas del parcial).
+// â˜… REFRESCO COMPLETO FORZADO (quita los fantasmas del parcial).
 //   `kForzarCompleto` lo pide quien sabe que la imagen va a quedar sucia (por ejemplo,
 //   volver de la pantalla de prueba o de la lista de escenas).
 bool gForzarCompleto = false;
+
+// ===========================================================================
+//  â˜…â˜… REFRESCO CON VENTANA (2026-09-21): MENOS BYTES, MENOS RATO SIN MIRAR EL BOTON â˜…â˜…
+//
+//  QUE HACIA ANTES: en CADA refresco se mandaban las 200 filas de los dos planos = 10.000
+//  bytes, y con el transporte por bit-bang eso son ~80-125 ms de bucle cerrado. Cambiar un
+//  digito de la bateria costaba exactamente lo mismo que cambiar la pantalla entera.
+//
+//  QUE HACE AHORA: se comparan los dos planos EN MEMORIA, se saca el rectangulo que de
+//  verdad cambia y se manda SOLO eso (ver `EpdVentana`). El panel sigue pintando con su
+//  onda y su tiempo (eso no se toca: es fisica), pero el nodo deja de mover bytes que no
+//  han cambiado y, sobre todo, deja de estar ciego tanto rato.
+//
+//  â˜… `gVentanaOn` es un INTERRUPTOR: se puede apagar en caliente desde el cable (`epdventana
+//    0`) y el driver vuelve al camino de siempre, el que esta probado en placa. Si algo sale
+//    mal en la prueba, se apaga y ya esta: no hay que volver a grabar.
+//  â˜…â˜… APAGADA POR DEFECTO, Y ESTO ES UNA VUELTA ATRAS MEDIDA (2026-09-21) â˜…â˜…
+//
+//  Se compilo con la ventana ENCENDIDA (b69) y **LA PANTALLA SE QUEDO SIN IMAGEN** en la placa
+//  del operador. El tÃ¡ctil tampoco respondia, y las dos cosas van juntas: el unico sitio donde
+//  se atiende el tactil durante un repintado es el bombeo del driver (ver ePDBombea), asi que
+//  si el refresco se atasca, el tactil se queda mudo con el. Es el MISMO cuadro que ya vimos al
+//  bajar las esperas del panel: cuando se toca el camino del refresco, se cae todo junto.
+//
+//  â˜… POR QUE FALLA, LEYENDO A LOS QUE LO TIENEN PROBADO: ni el firmware de referencia (cfr34k)
+//    ni GxEPD2 recortan la ventana de RAM. Los dos escriben SIEMPRE la ventana completa
+//    200x200 (comandos 0x44/0x45 con 0..24 y 0..199). El de referencia ademas fuerza un
+//    refresco COMPLETO cada hora. O sea que el panel se maneja con la ventana entera y el
+//    ahorro de bytes se busca por otro lado, no recortando la ventana. Nuestro driver hacia
+//    exactamente eso (0..24 y 0..199 clavados) y funcionaba.
+//
+//  SE QUEDA EL CODIGO, PERO APAGADO: sirve para probarlo con la placa delante y con medida
+//  (comando `epdventana 1` por el cable), y la vuelta atras es instantanea. Lo que NO se hace
+//  es dejarlo encendido en un firmware que va a la mano del operador.
+bool gVentanaOn = false;
+// Si el rectangulo sucio es mas grande que esto (en filas x ancho), no compensa: se manda
+// la pantalla entera como antes. 600 celdas ~ una cuarta parte del panel.
+constexpr uint32_t kMaxCeldasVentana = 600;
+
+// Contadores para poder MEDIR el ahorro y ver si la ventana trabaja (comando `epd` / `pantalla`).
+uint32_t gVentanasHechas = 0;        // refrescos que se hicieron con ventana
+uint32_t gRefrescosVacios = 0;       // refrescos que se saltaron (ni un byte distinto)
+uint32_t gCeldasUltimaVentana = 0;   // filas x ancho del ultimo rectangulo
+uint32_t gBytesUltimoRefresco = 0;   // bytes que se mandaron al panel en el ultimo refresco
+int gVentanaUltima[4] = {0, 0, 0, 0};  // x0, x1, y0, y1 del ultimo rectangulo
 
 bool gReady = false;      // el panel ha recibido su secuencia de arranque
 bool gDirty = false;      // hay algo dibujado sin mandar
@@ -143,7 +200,7 @@ bool gAsleep = false;     // el panel esta en deep sleep
 bool gSpiListo = false;   // el periferico SPIM2 esta configurado en nuestros pines
 
 // ------------------------------------------------------------------- SPI
-// ★★ SPIM2, CON INSTANCIA PROPIA DE nrfx, Y NUNCA SPIM3 (2026-09-14) ★★
+// â˜…â˜… SPIM2, CON INSTANCIA PROPIA DE nrfx, Y NUNCA SPIM3 (2026-09-14) â˜…â˜…
 //
 // En este core el objeto global `SPI` de Arduino vive en **SPIM3**
 // (libraries/SPI/SPI.cpp: `#define _SPI_DEV NRF_SPIM3`, y la variante del T-Echo
@@ -164,14 +221,15 @@ constexpr int EPD_MISO_PIN = 38;
 // costaria menos de un segundo y el nodo no se quedaria nunca mudo.
 constexpr uint32_t EPD_XFER_TIMEOUT_MS = 60;
 
-// Diagnostico (lo enseña el comando "epd" del USB).
+// Diagnostico (lo enseÃ±a el comando "epd" del USB).
 uint32_t gErrTimeout = 0;     // transferencias abortadas por tope de tiempo (0 = bien)
 uint32_t gErrSpi = 0;         // errores varios del periferico
 uint32_t gMsUltimo = 0;       // lo que tardo el ultimo refresco (completo o parcial)
 uint32_t gMsUltimoCompleto = 0;  // el ultimo COMPLETO (para comparar)
 uint32_t gMsUltimoParcial = 0;   // el ultimo PARCIAL (0 = todavia no ha habido ninguno)
+uint32_t gMsAntesDePintar = 0;   // lo NUESTRO de este refresco: hasta mandar el "a pintar" (b75)
 uint32_t gMsCompletoMs = 0;      // millis() en que EMPEZO el ultimo refresco COMPLETO
-bool gHuboCompleto = false;      // ¿ha habido algun completo? (ver epdTocaCompleto)
+bool gHuboCompleto = false;      // Â¿ha habido algun completo? (ver epdTocaCompleto)
 uint32_t gBusyTimeouts = 0;      // veces que BUSY no solto dentro del tope (0 = BUSY informa)
 uint32_t gBusyAvisos = 0;        // refrescos en los que BUSY estaba ALTO (el panel informa)
 uint32_t gNCompletos = 0;     // refrescos completos hechos
@@ -192,7 +250,7 @@ inline void epdCs(bool activo) { digitalWrite(PIN_CS, activo ? LOW : HIGH); }
 inline void epdDc(bool datos)  { digitalWrite(PIN_DC, datos ? HIGH : LOW); }
 
 // ============================================================================
-//  ★★ DOS TRANSPORTES, Y EL QUE SE USA ES EL BIT-BANG (2026-09-14) ★★
+//  â˜…â˜… DOS TRANSPORTES, Y EL QUE SE USA ES EL BIT-BANG (2026-09-14) â˜…â˜…
 //
 //  El camino del periferico SPIM2 esta AQUI AL LADO, entero y con diagnostico, pero
 //  NO se usa para pintar. Motivo, medido en esta placa con el comando "epdsonda":
@@ -210,7 +268,7 @@ inline void epdDc(bool datos)  { digitalWrite(PIN_DC, datos ? HIGH : LOW); }
 //  eventos ni de esperas, es que no arranca. (Y es justo el blocaje que describia el
 //  proyecto: el periferico de la pantalla se queda tomado/apagado en esta integracion).
 //
-//  ★ Y ESTO ES LO IMPORTANTE: el bit-bang SI funciona en esta placa. El encargo lo da
+//  â˜… Y ESTO ES LO IMPORTANTE: el bit-bang SI funciona en esta placa. El encargo lo da
 //    por descartado ("con PSEL apuntando a un pin lo gobierna el periferico y
 //    digitalWrite() no hace nada"), pero esa conclusion se saco cuando el bit-bang
 //    todavia estaba mal por otras dos razones que se descubrieron DESPUES:
@@ -232,7 +290,7 @@ int gTransporte = 0;
 // SSD1681 (aguanta hasta ~10 MHz), y ya es el doble de rapido que antes. La ganancia se nota
 // al pulsar un boton o moverse por el menu, donde el trasvasaje de los dos planos (10.000
 // bytes) dominaba el tiempo (~0,8 s). Con la escritura combinada de SCK+MOSI de abajo, el
-// trasvase baja a ~0,1-0,2 s. Se deja 1 us a proposito (no menos) por integridad de señal.
+// trasvase baja a ~0,1-0,2 s. Se deja 1 us a proposito (no menos) por integridad de seÃ±al.
 constexpr uint32_t EPD_BIT_US = 1;
 
 // Escribe en el puerto 0 o 1 segun el pin. Los numeros de Arduino de esta placa son
@@ -243,7 +301,7 @@ inline void epdGpioEscribe(int pin, bool alto) {
   if (alto) p->OUTSET = b; else p->OUTCLR = b;
 }
 
-// ★★ RECONFIGURACION POR "LEER-MODIFICAR-ESCRIBIR", QUE ES LO QUE HACE FALTA ★★
+// â˜…â˜… RECONFIGURACION POR "LEER-MODIFICAR-ESCRIBIR", QUE ES LO QUE HACE FALTA â˜…â˜…
 //
 // El primer intento reconfiguraba los pines con `nrf_gpio_cfg()` / `pinMode()`, que
 // ESCRIBEN TODO el registro PIN_CNF. Eso tiene un efecto lateral grave en este firmware:
@@ -264,13 +322,13 @@ inline void epdPinSalidaFuerte(int pin) {
 }
 
 // Saca un byte, MSB primero, con el flanco de subida en medio (el panel lee ahi).
-// ★ ACELERACION (2026-09-15): SCK (P0.31) y MOSI (P0.29) estan los DOS en el puerto 0,
+// â˜… ACELERACION (2026-09-15): SCK (P0.31) y MOSI (P0.29) estan los DOS en el puerto 0,
 //   asi que se escriben con un solo acceso a OUTSET/OUTCLR combinando las mascaras. Antes
 //   cada bit hacia 3 llamadas de GPIO + 3 delayMicroseconds; ahora 4 escrituras de registro
 //   y UNA espera corta por bit. Es lo que hace que cambiar de escena o moverse por el menu
 //   responda notablemente mas rapido (el trasvase de los dos planos dominaba el refresco).
 //   El `delayMicroseconds(EPD_BIT_US)` (1 us) mantiene un ritmo ~500 kHz, de sobra dentro
-//   del limite del SSD1681 y sin arriesgar la integridad de la señal.
+//   del limite del SSD1681 y sin arriesgar la integridad de la seÃ±al.
 #define EPD_MSK_SCK  (1u << 31)
 #define EPD_MSK_MOSI (1u << 29)
 inline void epdBitBangByte(uint8_t b) {
@@ -287,7 +345,7 @@ inline void epdBitBangByte(uint8_t b) {
 // Deja los pines de la pantalla como SALIDAS DE ALTA CORRIENTE, que es como los pone
 // GxEPD2 y el propio core ("el SPI a 8 MHz necesita salidas de alta corriente").
 //
-// ★★★ AQUI ESTABA EL FALLO QUE FALTABA, Y ES SUTIL (2026-09-14) ★★★
+// â˜…â˜…â˜… AQUI ESTABA EL FALLO QUE FALTABA, Y ES SUTIL (2026-09-14) â˜…â˜…â˜…
 //
 // **UN PERIFERICO CON `PSEL` APUNTANDO A UN PIN SE QUEDA ESE PIN, AUNQUE ESTE
 // DESHABILITADO.** No basta con `nrf_spim_disable()`: mientras `PSEL.SCK` sea 0x1F
@@ -306,7 +364,7 @@ inline void epdBitBangByte(uint8_t b) {
 // va por bit-bang) y es la diferencia que lo explica todo.
 #define EPD_PSEL_DESCONECTADO 0x80000000u
 
-// ★★ EL RELOJ SE DEJA EN BAJO (MODO 0) ★★
+// â˜…â˜… EL RELOJ SE DEJA EN BAJO (MODO 0) â˜…â˜…
 // En modo 0 el reloj reposa en BAJO y el panel lee en el flanco de SUBIDA: arrancando en
 // alto, el primer flanco que ve el panel es de bajada y pierde el primer bit de cada byte.
 // El banco de pruebas pone `SCK=0` explicitamente antes de empezar; aqui se hace igual.
@@ -340,7 +398,7 @@ void epdPinesReposo() {
 // Configura el periferico SPIM2 en nuestros pines. Se deja por si algun dia se
 // averigua por que sus tareas no arrancan en esta integracion (ver la nota de arriba).
 void epdSpiConfigura() {
-  // ★★ UN SOSPECHOSO MAS, Y ES FUERTE (2026-09-14): EL SAADC ★★
+  // â˜…â˜… UN SOSPECHOSO MAS, Y ES FUERTE (2026-09-14): EL SAADC â˜…â˜…
   //
   // src/sensors.cpp mide la bateria con `analogRead(31)`, o sea el canal AIN7, que es
   // **P0.31: el SCK DE LA PANTALLA**. Y en el T-Echo eso es un error, porque su bateria
@@ -409,7 +467,7 @@ void epdSpiConfigura() {
   }
 }
 
-// ★★ T-ECHO PROJECT BUTTER: EL GANCHO DEL BOTON (2026-09-15) ★★
+// â˜…â˜… T-ECHO PROJECT BUTTER: EL GANCHO DEL BOTON (2026-09-15) â˜…â˜…
 //
 // El refresco de este panel BLOQUEA: desde que se manda 0x20 hasta que la tinta se ha
 // movido pasan 0,35-2 s de espera, y antes eso era `delay()` a secas. En ese rato la
@@ -419,15 +477,15 @@ void epdSpiConfigura() {
 // (button.cpp), pero aqui ademas se resuelven los plazos vencidos y el gesto queda
 // ENCOLADO, listo para que el bucle lo ejecute en cuanto el panel quede libre.
 //
-// ★ El gancho NO pinta y NO ejecuta acciones (lo pone main.cpp): solo encola. Entrar a
+// â˜… El gancho NO pinta y NO ejecuta acciones (lo pone main.cpp): solo encola. Entrar a
 //   pintar desde dentro de un pintado seria un lio; ejecutar una baliza, tambien.
 //   Se declara AQUI ARRIBA, antes de la primera funcion del driver que lo usa.
-//   ★ `displaySetPumpBoton()`, que es quien lo pone, se define FUERA del espacio de
+//   â˜… `displaySetPumpBoton()`, que es quien lo pone, se define FUERA del espacio de
 //     nombres anonimo (mas abajo, junto a las sondas de taller).
 static void (*gPumpBoton)(void) = nullptr;
 inline void ePDBombea() { if (gPumpBoton) gPumpBoton(); }
 
-// ★ TRANSFERENCIA POR EL PERIFERICO, CON TOPE DE TIEMPO. NO se usa para pintar (ver la
+// â˜… TRANSFERENCIA POR EL PERIFERICO, CON TOPE DE TIEMPO. NO se usa para pintar (ver la
 //   nota de arriba), pero se deja entera: si algun dia se arregla, basta con poner
 //   gTransporte = 1. El tope es lo que impide que el firmware se quede mudo.
 bool epdXferSpim(const uint8_t *tx, size_t n) {
@@ -484,7 +542,7 @@ bool epdXfer(const uint8_t *tx, size_t n) {
 // Comando con sus datos, con el CS bajo todo el rato (igual que el firmware de fabrica:
 // su send_command() lo deja bajo y lo sube al terminar).
 void epdCmdData(uint8_t cmd, const uint8_t *datos, size_t n) {
-  // ★ T-ECHO PROJECT BUTTER: entre comando y comando se bombea el boton. El trasvase
+  // â˜… T-ECHO PROJECT BUTTER: entre comando y comando se bombea el boton. El trasvase
   //   de un plano (5.000 bytes por bit-bang) son ~80-125 ms de bucle cerrado: es la
   //   ventana ciega mas larga que queda, y asi se parte en trozos mas cortos.
   ePDBombea();
@@ -553,7 +611,7 @@ void epdReset() {
 }
 
 // ---------------------------------------------------------------------------
-//  ★★ PASO 1: REFRESCO PARCIAL — LAS DOS FORMAS DE REFRESCAR (2026-09-15) ★★
+//  â˜…â˜… PASO 1: REFRESCO PARCIAL â€” LAS DOS FORMAS DE REFRESCAR (2026-09-15) â˜…â˜…
 //
 //  Patron copiado del firmware de referencia que funciona en esta placa
 //  (firm_ref_techo/t-echo-lora-aprs-main/src/epaper.c, FULL_UPDATE_SEQUENCE y
@@ -583,11 +641,17 @@ constexpr uint8_t kOndaBordeParcial  = 0x80;
 constexpr uint8_t kSecuenciaCompleto = 0xF7;
 constexpr uint8_t kSecuenciaParcial  = 0xFF;
 
-constexpr uint32_t kMaxParcialesSeguidos = 720;        // tope por numero de parciales
+// â˜… TOPE DE PARCIALES SEGUIDOS: BAJADO DE 720 A 20 (2026-09-21).
+//   Medido por otros (especificacion del panel y Meshtastic, que fuerza un completo cada 20
+//   refrescos rapidos): el parcial deja FANTASMAS (restos de la imagen anterior) que se van
+//   acumulando, y el completo es lo unico que los quita. 720 parciales seguidos entre dos
+//   completos es muchisimo mas de lo que aguanta el panel: con el carrusel a un refresco por
+//   minuto son doce horas sin limpiar. 20 es el numero que usa el que mas ha probado esto.
+constexpr uint32_t kMaxParcialesSeguidos = 20;         // tope por numero de parciales
 constexpr uint32_t kMaxMsSinCompleto = 60UL * 60UL * 1000UL;   // 60 min (como el de referencia)
 
 // ---------------------------------------------------------------------------
-//  ★★ P.6: LA ESPERA PREVIA DE BUSY, BAJADA DE 2.000 ms A 300 ms (2026-09-15) ★★
+//  â˜…â˜… P.6: LA ESPERA PREVIA DE BUSY, BAJADA DE 2.000 ms A 300 ms (2026-09-15) â˜…â˜…
 //
 //  Medido en hardware: el parcial pintaba y NO parpadeaba (confirmado a ojo por el
 //  operador), pero tardaba 3.217 ms. La cuenta salia clavada:
@@ -601,7 +665,7 @@ constexpr uint32_t kMaxMsSinCompleto = 60UL * 60UL * 1000UL;   // 60 min (como e
 //
 //  SE QUEDA UNA ESPERA, PERO CORTA: sigue habiendo red de seguridad (nunca una espera sin
 //  salida) y si algun dia el panel contesta de verdad, se aprovecha.
-//  ★★ VELOCIDAD (2026-09-21): los 300 ms de esta espera se han quitado, y aqui vivia la
+//  â˜…â˜… VELOCIDAD (2026-09-21): los 300 ms de esta espera se han quitado, y aqui vivia la
 //     constante que los ponia (`kEsperaPreviaBusyMs`). El motivo, medido en el codigo: en
 //     ESTA unidad BUSY no informa NUNCA, asi que la espera no esperaba a nada: vencia el
 //     tope y seguia. Se pagaban 300 ms en CADA refresco para nada. Ahora se sondea con un
@@ -621,7 +685,7 @@ bool epdEsperaBusy(uint32_t topeMs) {
       gBusyTimeouts++;
       return false;
     }
-    ePDBombea();   // ★ el boton se sigue mirando: este tope puede ser de 300-1500 ms
+    ePDBombea();   // â˜… el boton se sigue mirando: este tope puede ser de 300-1500 ms
     delay(2);
   }
   return true;
@@ -634,7 +698,7 @@ bool epdEsperaBusy(uint32_t topeMs) {
 // de mandarlo a dormir (0x10 0x01): dormirlo a mitad de un refresco dejaria la imagen a
 // medias. Es tiempo de la pantalla, no del nodo: la radio y el GPS siguen en el bucle.
 //
-// ★ AQUI ESTABA LA MAYOR PARTE DE LA LATENCIA DE LOS TOQUES (T-Echo Project Butter,
+// â˜… AQUI ESTABA LA MAYOR PARTE DE LA LATENCIA DE LOS TOQUES (T-Echo Project Butter,
 //   2026-09-15): este `delay(minimoMs - gastado)` es UN TIRON DE 350 ms (parcial) o
 //   2.000 ms (completo) sin mirar el boton. Ahora se espera lo mismo, pero en trozos de
 //   2 ms y bombeando el boton en cada trozo: el panel tarda igual y el toque no se
@@ -642,7 +706,7 @@ bool epdEsperaBusy(uint32_t topeMs) {
 void epdEsperaPintado(uint32_t minimoMs, uint32_t topeBusyMs) {
   const uint32_t t0 = millis();
   const bool busyInformo = epdEsperaBusy(topeBusyMs);
-  // ★ Si `epdEsperaBusy()` devuelve false es que encontro BUSY en ALTO (el panel estaba
+  // â˜… Si `epdEsperaBusy()` devuelve false es que encontro BUSY en ALTO (el panel estaba
   //   trabajando) y lo vio bajar: eso es la prueba DIRECTA de que en esta unidad BUSY
   //   informa. Si devuelve true, BUSY ya estaba bajo al mirar. Se cuentan las dos cosas.
   if (!busyInformo) gBusyAvisos++;
@@ -660,7 +724,7 @@ void epdEsperaPintado(uint32_t minimoMs, uint32_t topeBusyMs) {
 //   LEN(4) = comando + 3 datos       -> epdCmd3()
 // Mandar un byte de mas deja la ventana de RAM mal configurada y el panel no arranca.
 //
-// ★ El PARCIAL usa esta MISMA secuencia y solo cambia la onda de borde (0x3C), que es
+// â˜… El PARCIAL usa esta MISMA secuencia y solo cambia la onda de borde (0x3C), que es
 //   exactamente lo que hace el de referencia: alli las dos tablas son identicas salvo
 //   0x3C y 0x22. Tambien necesita su reset hardware, y lo tiene (epdReset()).
 void epdInitPanel(bool parcial) {
@@ -681,58 +745,202 @@ void epdInitPanel(bool parcial) {
 // El cuerpo comun de los dos refrescos: los dos planos y el "a pintar".
 //   `bufAnterior` = lo que hay pintado; con nullptr se manda `bufActual` en los dos planos
 //   (que es lo que se hacia en el completo de la version anterior).
+//
+// â˜…â˜… VENTANA DE RAM: POR QUE ES UN RECTANGULO Y NO "LO QUE CAMBIA" (2026-09-21) â˜…â˜…
+//   El controlador recorre la ventana FILA A FILA y, al llegar al final de una fila, vuelve
+//   SOLO al principio de la siguiente. O sea que si se le manda una fila a medias, lo que
+//   venga detras se escribe DESPLAZADO y la imagen sale torcida. Por eso lo que se manda es
+//   un RECTANGULO COMPLETO (todas las filas con el mismo ancho), y de cada fila se mandan
+//   todos los bytes del ancho elegido: asi el salto de fila siempre cuadra.
+//   Lo que SI se ahorra: las filas que no cambian no se mandan. Para un cambio de bateria
+//   (3-4 filas de 25 bytes) son ~100 bytes por plano en vez de 5.000.
+struct EpdVentana {
+  int y0 = 0, y1 = -1;      // filas que se van a mandar
+  int x0 = 0, x1 = -1;      // columnas de byte (0..24) del ancho comun
+  uint32_t celdas = 0;      // filas x ancho (para decidir si compensa)
+  bool vacia() const { return y1 < y0 || x1 < x0; }
+};
+
+// Rectangulo que cubre TODO lo que cambia entre lo pintado y lo nuevo. Se calcula sobre el
+// formato real del bufer (bitidx = y*200 + x, o sea 25 bytes por fila), que es justo como
+// direcciona el panel: x = columna de byte (0..24), y = fila (0..199).
+EpdVentana epdVentanaSucia(const uint8_t *viejo, const uint8_t *nuevo) {
+  EpdVentana v;
+  int x0 = EPD_STRIDE, x1 = -1, y0 = -1, y1 = -1;
+  for (int y = 0; y < EPD_H; y++) {
+    const uint8_t *a = viejo + y * EPD_STRIDE;
+    const uint8_t *b = nuevo + y * EPD_STRIDE;
+    int f0 = -1, f1 = -1;
+    for (int k = 0; k < EPD_STRIDE; k++) {
+      if (a[k] != b[k]) { if (f0 < 0) f0 = k; f1 = k; }
+    }
+    if (f0 < 0) continue;            // esta fila no cambia: no se manda
+    if (y0 < 0) y0 = y;
+    y1 = y;
+    if (f0 < x0) x0 = f0;
+    if (f1 > x1) x1 = f1;
+  }
+  if (y0 < 0) return v;              // vacia: no hay ni un byte distinto
+  v.y0 = y0; v.y1 = y1; v.x0 = x0; v.x1 = x1;
+  v.celdas = (uint32_t)(y1 - y0 + 1) * (uint32_t)(x1 - x0 + 1);
+  return v;
+}
+
+// Manda SOLO las filas de la ventana, el ancho completo de la ventana en cada una.
+void epdCmdVentana(uint8_t cmd, const uint8_t *buf, const EpdVentana &v) {
+  gCmdActual = cmd;
+  if (gTransporte == 1) epdSpiConfigura();
+  epdCs(true);
+  epdDc(false);
+  gFaseActual = 1;
+  epdXfer(&cmd, 1);
+  epdDc(true);
+  gFaseActual = 2;
+  const size_t ancho = (size_t)(v.x1 - v.x0 + 1);
+  for (int y = v.y0; y <= v.y1; y++) {
+    epdXfer(buf + (size_t)y * EPD_STRIDE + v.x0, ancho);
+  }
+  epdCs(false);
+}
+
 void epdRefresca(bool parcial, const uint8_t *bufAnterior, const uint8_t *bufActual) {
   const uint32_t t0 = millis();
 
-  // ★★ VUELTA ATRAS DEL 2026-09-21 (¡y esto hay que leerlo!) ★★
-  //   Aqui se probo a bajar esta espera de 300 ms a 12 ms, con el argumento de que en esta
-  //   unidad BUSY no informa y por tanto la espera "no esperaba a nada".
-  //   RESULTADO MEDIDO EN LA PLACA DEL OPERADOR: con el firmware nuevo LA PANTALLA SE QUEDO
-  //   EN NEGRO y EL TACTIL DEJO DE RESPONDER. El tactil solo se atiende DURANTE los refrescos
-  //   (el driver bombea el boton en sus esperas, ver ePDBombea), asi que si el refresco se
-  //   atasca, el tactil se queda mudo con el. Se sospecha que estas esperas SON la red que
-  //   evita empezar un refresco encima de otro cuando BUSY no informa.
-  //   O SEA: la deduccion "BUSY no informa, luego no hace falta esperar" ERA FALSA. La espera
-  //   sirve aunque BUSY no diga nada. NO SE VUELVE A TOCAR ESTO SIN MEDIRLO EN UNA PLACA.
-  constexpr uint32_t kEsperaPreviaBusyMs = 300;
-  epdEsperaBusy(kEsperaPreviaBusyMs);
+  // â˜…â˜… LA ESPERA PREVIA A BUSY, ELIMINADA (b75, 2026-09-21) â˜…â˜…
+  //
+  // QUE HABIA AQUI: 300 ms de espera con tope, ANTES de inicializar el panel, en CADA
+  // refresco (parcial y completo). Y esa espera no esperaba a nada:
+  //   - se ejecuta cuando el panel esta DORMIDO (el refresco anterior lo mando a deep sleep),
+  //     asi que no hay ningun trabajo suyo en curso que haya que dejar terminar;
+  //   - y en esta unidad BUSY no informa NUNCA, asi que vencia el tope: 300 ms de reloj
+  //     tirados a la basura, siempre, en cada repintado.
+  //
+  // â˜… POR QUE SE PUEDE QUITAR SIN MIEDO, Y ESTO ES LO QUE HAY QUE LEER: el firmware de
+  //   referencia (cfr34k) **no tiene ninguna espera previa**. Su secuencia empieza por el
+  //   reset, aplica la corriente al panel y espera **10 ms**, y sigue. Nosotros esperabamos
+  //   300 ms antes de empezar a hablar. La diferencia entre un menu que responde en medio
+  //   segundo y uno que responde en uno esta, casi toda, en estas dos esperas nuestras
+  //   (esta y la de tensiones, ver mas abajo).
+  //
+  // â˜… OJO, Y ES IMPORTANTE NO CONFUNDIRSE: cuando esta espera se bajo a 12 ms y LA PANTALLA
+  //   SE QUEDO EN NEGRO, el cambio no vino de aqui. Aquel build tocaba TRES cosas a la vez
+  //   (esta espera, la de tensiones de 200 a 40 ms y el tiempo de pintado). Lo que se ha
+  //   comprobado despues es que la de TENSIONES es la que no se puede tocar a la ligera: es
+  //   la que garantiza que el panel tiene con que mover la tinta. Esta, en cambio, se ejecuta
+  //   sobre un panel dormido y no protege de nada. Se quita SOLO esta.
+  //
+  // â˜… SI ALGUN DIA HAY QUE VOLVER ATRAS: poner otra vez
+  //       epdEsperaBusy(300);
+  //   en esta misma linea. Es una linea, y el porque esta escrito aqui.
 
   epdInitPanel(parcial);
 
-  // (1) ENCENDER LAS TENSIONES DEL PANEL. Copiado de `GxEPD2::_PowerOn()`: `0x22 = 0xE0` y
-  //     luego `0x20`. Sin esto el controlador acepta los datos pero el panel no tiene con
-  //     que mover la tinta.
+  // â˜…â˜… (0) LA VENTANA: SOLO SE MANDAN LAS FILAS QUE CAMBIAN (2026-09-21) â˜…â˜…
+  //   Se decide AQUI, despues de epdInitPanel() (que es quien deja la ventana en 200x200)
+  //   y antes de mandar los datos. Si no compensa, se deja la ventana completa de siempre:
+  //   el camino viejo sigue siendo el camino por defecto cuando el rectangulo es grande.
+  EpdVentana vAnt, vAct;
+  bool usarVentana = false;
+  if (gVentanaOn) {
+    // â˜…â˜… LA MISMA VENTANA PARA LOS DOS PLANOS (y esto no es un detalle) â˜…â˜…
+    //   El controlador decide que pixel mover comparando las DOS memorias. Si se escribiera
+    //   en el plano anterior solo la zona "que era sucia antes" y en el actual solo la "que
+    //   es sucia ahora", las zonas que DEJARON de estar sucias se quedarian con el valor
+    //   viejo en 0x26 y el panel las veria "iguales" y no las borraria: quedarian restos.
+    //   Por eso el rectangulo es la UNION de las dos diferencias, y se manda el mismo a los
+    //   dos planos. Se mandan unos bytes de mas en el plano anterior; a cambio, borrar sale
+    //   bien, que es lo que de verdad se nota en la pantalla.
+    vAct = epdVentanaSucia(bufAnterior ? bufAnterior : bufActual, bufActual);
+    if (!vAct.vacia()) {
+      vAnt = bufAnterior ? epdVentanaSucia(bufActual, bufAnterior) : vAct;
+      // El rectangulo comun: union de los dos.
+      if (vAnt.y0 < vAct.y0) vAct.y0 = vAnt.y0;
+      if (vAnt.y1 > vAct.y1) vAct.y1 = vAnt.y1;
+      if (vAnt.x0 < vAct.x0) vAct.x0 = vAnt.x0;
+      if (vAnt.x1 > vAct.x1) vAct.x1 = vAnt.x1;
+      vAct.celdas = (uint32_t)(vAct.y1 - vAct.y0 + 1) * (uint32_t)(vAct.x1 - vAct.x0 + 1);
+      vAnt = vAct;
+      // Compensa solo si el rectangulo es pequeno: si cambia media pantalla, el completo
+      // de siempre hace menos comandos y no se queda peor.
+      usarVentana = (vAct.celdas <= kMaxCeldasVentana);
+      gCeldasUltimaVentana = vAct.celdas;
+    } else {
+      // Ni un byte distinto entre lo pintado y lo nuevo. â˜… NO SE SALE POR AQUI (2026-09-21):
+      // la version que se grabo en la placa (b69) devolvia sin mas, y eso metia un camino
+      // nuevo (salir de epdRefresca sin mandar nada ni refrescar `gBufPrev`) justo en el sitio
+      // que se estaba tocando. Se cuenta y se sigue por el camino de siempre, que es el que
+      // esta probado: si de verdad no hay nada que cambiar, el panel recibe lo mismo que ya
+      // tiene y no se mueve ni un pixel.
+      gRefrescosVacios++;
+    }
+  }
+  if (usarVentana) {
+    epdCmd2(0x44, (uint8_t)vAct.x0, (uint8_t)vAct.x1);             // RAM x: columnas de byte
+    epdCmd4(0x45, (uint8_t)(vAct.y0 & 0xFF), (uint8_t)(vAct.y0 >> 8),
+                  (uint8_t)(vAct.y1 & 0xFF), (uint8_t)(vAct.y1 >> 8));  // RAM y: filas
+    epdCmd1(0x4E, (uint8_t)vAct.x0);                               // contador X = x0
+    epdCmd2(0x4F, (uint8_t)(vAct.y0 & 0xFF), (uint8_t)(vAct.y0 >> 8));  // contador Y = y0
+    gVentanasHechas++;
+    gVentanaUltima[0] = vAct.x0; gVentanaUltima[1] = vAct.x1;
+    gVentanaUltima[2] = vAct.y0; gVentanaUltima[3] = vAct.y1;
+  }
+
+  // (1) ENCENDER LAS TENSIONES DEL PANEL â€” â˜…â˜… SOLO EN EL REFRESCO COMPLETO (b84) â˜…â˜…
   //
-  //     OJO: el parcial del firmware de referencia NO manda este 0xE0 (tiene un 0x22 0xB9
-  //     comentado), o sea que el de referencia asume que las tensiones ya estan puestas por
-  //     el refresco anterior. Aqui SI se manda en los dos casos a proposito: entre refresco y
-  //     refresco el panel se manda a dormir (0x10 0x01), y no consta que al despertar
-  //     conserve las tensiones. Es un byte de mas en el camino; si el parcial no saliera
-  //     limpio, esta es la PRIMERA cosa que hay que probar a quitar.
-  epdCmd1(0x22, 0xE0);
-  epdCmd(0x20);
-  // 200 ms de espera a que el panel levante las tensiones. Se bombea el boton mientras.
-  // ★ T-ECHO PROJECT BUTTER: era un `delay(200)` a secas, o sea 200 ms mas de ventana
-  //   ciega para los toques (y esta espera la paga CADA refresco).
-  // ★★ VUELTA ATRAS DEL 2026-09-21 ★★ Aqui se probo a convertir esto en un sondeo de BUSY
-  //   con tope corto (40 ms) y LA PANTALLA SE QUEDO EN NEGRO en la placa del operador: las
-  //   tensiones NO estaban puestas cuando llegaba la orden de refrescar. El tope corto era
-  //   una suposicion, no una medida. Se vuelve a los 200 ms de siempre y NO SE TOCA SIN
-  //   MEDIRLO EN UNA PLACA (con esto ajustable desde el cable, cuando se haga).
-  constexpr uint32_t kEsperaTensionesMs = 200;
-  epdEsperaBusy(kEsperaTensionesMs);
+  // QUE HABIA: `0x22 0xE0` + `0x20` y despues **200 ms de espera, en CADA refresco**, parcial
+  // incluido. Esa espera no esperaba a nada (BUSY no informa en esta unidad), asi que eran
+  // 200 ms de reloj tirados en cada toque. Pero quitarla a lo bruto dejo la pantalla en negro
+  // (probado en placa), asi que llevaba un aviso escrito: "NO SE TOCA SIN MEDIRLO".
+  //
+  // â˜…â˜… AHORA YA ESTA MEDIDO, Y EL DATO VIENE DEL FIRMWARE DE REFERENCIA (cfr34k) â˜…â˜…
+  //   Su secuencia PARCIAL **no manda este 0xE0**, y funciona. El motivo esta en su propia
+  //   tabla: el que duerme al panel es `0x10 0x01` (deep sleep del CONTROLADOR), y eso **no
+  //   apaga el elevador de tensiones del panel**. O sea que el elevador se queda levantado del
+  //   refresco anterior, y por eso no hay que volver a levantarlo ni esperar a que suba.
+  //   Nuestro comentario de antes decia "no consta que al despertar conserve las tensiones", y
+  //   ahora SI consta: el de referencia lleva anos sin mandarlo en los parciales.
+  //
+  //   â˜… El COMPLETO si lo manda y si espera: ahi el panel acaba de arrancar de cero (o viene de
+  //     un refresco en el que pudo perder las tensiones) y es donde la espera hace su trabajo.
+  //     Ese es el caso que se probo y que se rompio al bajarlo: se queda como estaba.
+  //
+  //   AHORRO: 200 ms en cada refresco parcial, o sea en CADA toque del menu. Con el cambio del
+  //   aplazamiento del b83, un toque suelto pasa de ~700-950 ms a ~350-500 ms.
+  if (!parcial) {
+    epdCmd1(0x22, 0xE0);   // copiado de `GxEPD2::_PowerOn()`
+    epdCmd(0x20);          // y el chispazo que levanta el elevador
+    // 200 ms a que las tensiones suban. Se bombea el boton mientras (ePDBombea).
+    constexpr uint32_t kEsperaTensionesMs = 200;
+    epdEsperaBusy(kEsperaTensionesMs);
+  }
+
+  // â˜…â˜… MEDIDA: CUANTO TARDAMOS NOSOTROS ANTES DE MANDAR EL "A PINTAR" (b75) â˜…â˜…
+  //   Todo lo que hay hasta aqui es NUESTRO (inicializar el panel, levantar tensiones, mandar
+  //   los bytes), no del panel. A partir de aqui empieza lo que tarda la tinta, que eso si es
+  //   fisica. Este numero es el que hay que mirar para saber si de verdad hemos quitado la
+  //   espera previa de 300 ms: antes valia ~630 ms, y con la espera fuera tiene que quedarse
+  //   en ~330 ms. Sale por la traza de taller (`diag on`).
+  gMsAntesDePintar = millis() - t0;
 
   // (2) LOS DOS PLANOS, EN EL ORDEN DEL DE REFERENCIA: 0x26 (anterior) y despues 0x24
-  //     (actual). ★ ESTE ORDEN ES EL QUE IMPORTA: antes se mandaba la misma imagen en los
+  //     (actual). â˜… ESTE ORDEN ES EL QUE IMPORTA: antes se mandaba la misma imagen en los
   //     dos, que es justo lo que impide que el controlador detecte los cambios.
   const uint32_t fallosAntes = gErrTimeout + gErrSpi;
   const uint32_t amountAntes = gTxVistoAmount;
   const uint32_t bytesAntes = gBytesBitBang;
-  epdCmdBuf(0x26, bufAnterior ? bufAnterior : bufActual, EPD_BUFSZ);
-  epdCmdBuf(0x24, bufActual, EPD_BUFSZ);
+  if (usarVentana) {
+    // Solo las filas del rectangulo. El plano anterior se manda con SU rectangulo (puede
+    // ser distinto del de ahora) para que el controlador vea el cambio en los dos.
+    epdCmdVentana(0x26, bufAnterior ? bufAnterior : bufActual, vAnt);
+    epdCmdVentana(0x24, bufActual, vAct);
+  } else {
+    epdCmdBuf(0x26, bufAnterior ? bufAnterior : bufActual, EPD_BUFSZ);
+    epdCmdBuf(0x24, bufActual, EPD_BUFSZ);
+  }
   const uint32_t fallosAhora = (gErrTimeout + gErrSpi) - fallosAntes;
+  gBytesUltimoRefresco = gBytesBitBang - bytesAntes;
 
-  // ★ TRAZA DE TALLER (2026-09-16): va agrupada en el MODO DIAGNOSTICO y se calla en modo
+  // â˜… TRAZA DE TALLER (2026-09-16): va agrupada en el MODO DIAGNOSTICO y se calla en modo
   //   TNC. Antes salia SIEMPRE, una por cada repintado (~1,5 s), y eso llenaba la consola
   //   del configurador y ensuciaba el puerto cuando el nodo trabaja de TNC. Ver diag.h.
   if (diagTrazaTaller()) {
@@ -741,14 +949,26 @@ void epdRefresca(bool parcial, const uint8_t *bufAnterior, const uint8_t *bufAct
                   parcial ? "PARCIAL" : "COMPLETO",
                   (unsigned long)fallosAhora,
                   (unsigned long)(gTxVistoAmount - amountAntes),
-                  (unsigned long)(gBytesBitBang - bytesAntes), gTransporte,
+                  (unsigned long)gBytesUltimoRefresco, gTransporte,
                   (unsigned long)NRF_SPIM2->PSEL.SCK,
                   (int)digitalRead(PIN_CS), (int)digitalRead(PIN_DC),
                   (int)digitalRead(PIN_SCK), (int)digitalRead(PIN_MOSI),
                 (int)digitalRead(PIN_BUSY));
+    // â˜… VENTANA (2026-09-21): sin esta linea no hay forma de saber si el ahorro de bytes
+    //   esta ocurriendo de verdad. ventana=si/no, celdas del rectangulo y sus limites.
+    Serial.printf("PANTALLA: ventana=%s celdas=%lu x=%d..%d y=%d..%d bytes=%lu\r\n",
+                  usarVentana ? "si" : "no",
+                  (unsigned long)gCeldasUltimaVentana,
+                  gVentanaUltima[0], gVentanaUltima[1], gVentanaUltima[2], gVentanaUltima[3],
+                  (unsigned long)gBytesUltimoRefresco);
+    // â˜… LA MEDIDA DE VELOCIDAD (b75): `nuestro` = lo que tardamos ANTES de que el panel
+    //   empiece a mover la tinta (esperas + init + bytes). `total` = el refresco entero.
+    //   La diferencia entre los dos es lo que tarda el panel, que eso no se puede tocar.
+    Serial.printf("PANTALLA: tiempo nuestro=%lums  total=%lums  (el resto es del panel)\r\n",
+                  (unsigned long)gMsAntesDePintar, (unsigned long)gMsUltimo);
   }
 
-  // (3) ¡A PINTAR! La unica diferencia de comandos entre completo y parcial.
+  // (3) Â¡A PINTAR! La unica diferencia de comandos entre completo y parcial.
   if (parcial) {
     epdCmd1(0x22, kSecuenciaParcial);
     epdCmd(0x20);
@@ -790,13 +1010,13 @@ void epdRefresca(bool parcial, const uint8_t *bufAnterior, const uint8_t *bufAct
 
 // Refresco COMPLETO con lo que haya en gBuf.
 //
-// ★ NO SE ESPERA AL PIN BUSY A CIEGAS. Esta medido en ESTA unidad: BUSY no se mueve NUNCA
+// â˜… NO SE ESPERA AL PIN BUSY A CIEGAS. Esta medido en ESTA unidad: BUSY no se mueve NUNCA
 //   en los refrescos completos (0 altos en 39.565 muestras, con digitalRead, con el registro
 //   IN y tambien con resistencia de subida) y la pantalla se refresca igual. Por eso la
 //   espera es por TIEMPO (con el tope de BUSY solo como red de seguridad si algun dia
 //   contestara). Un refresco completo real dura ~2 s.
 void epdFullRefresh() {
-  // ★ OJO: aqui NO se comprueba `gSpiListo`. Esa bandera solo se pone en modo SPIM2, y en
+  // â˜… OJO: aqui NO se comprueba `gSpiListo`. Esa bandera solo se pone en modo SPIM2, y en
   //   modo bit-bang se quedaba en false: el refresco salia por la puerta de atras sin
   //   mandar ni un byte (sintoma: "bytesBitBang=0" y "ultimoRefresco=0ms"). El estado que
   //   de verdad importa es que los pines esten preparados, y de eso se encarga
@@ -810,7 +1030,7 @@ void epdFullRefresh() {
   gForzarCompleto = false;
 }
 
-// ★★ REFRESCO PARCIAL: manda el plano VIEJO y el NUEVO y el controlador solo mueve lo que
+// â˜…â˜… REFRESCO PARCIAL: manda el plano VIEJO y el NUEVO y el controlador solo mueve lo que
 //    cambia. Si no hay un plano anterior fiable (primer refresco tras el arranque, o un
 //    refresco anterior que salio mal), cae al completo sin pensarlo.
 void epdPartialRefresh() {
@@ -818,18 +1038,53 @@ void epdPartialRefresh() {
   epdRefresca(true, gBufPrev, gBuf);
 }
 
-// ¿Toca forzar un completo para quitar fantasmas? Dos motivos: demasiados parciales
-// seguidos, o demasiado tiempo sin un completo.
+// â˜…â˜… EL COMPLETO DE LIMPIEZA YA NO TE SALTA MIENTRAS NAVEGAS (b85) â˜…â˜…
 //
-// ★ OJO CON LA CUENTA DEL TIEMPO: `gMsCompletoMs` es un `millis()` ABSOLUTO, que puede
-//   valer 0 de verdad si el completo ocurre en el primer milisegundo tras el arranque. Por
-//   eso el "¿ha habido algun completo?" se pregunta con `gHuboCompleto` y no comparando
-//   `gMsCompletoMs` con 0: si no, el tope de tiempo podia no dispararse nunca o dispararse
-//   de golpe por una resta contra un cero que no era "sin datos".
+// QUE PASABA: cada `kMaxParcialesSeguidos` (20) parciales, el driver metia un refresco
+// COMPLETO para quitar los fantasmas que deja el parcial. Un completo son **~2,5 segundos** de
+// pantalla. Moviendote por el menu, eso significa que **cada 20 toques te comes 2,5 segundos**,
+// y siempre en el peor momento: en mitad de la navegacion.
+//
+// QUE SE HACE AHORA: el completo de limpieza SIGUE HACIENDOSE (los fantasmas hay que quitarlos,
+// y el parcial los acumula), pero **se aplaza mientras el operador esta tocando**. En cuanto
+// pasa el rato sin tocar, el refresco que toque sale completo y la pantalla se limpia.
+//
+// â˜… POR QUE ES SEGURO APLAZARLO: el parcial solo deja fantasmas DONDE PINTA, y solo pinta
+//   cuando algo cambia. Si el operador esta tocando, esta cambiando cosas y acumulando
+//   fantasmas... pero tambien los esta viendo, asi que no es una sorpresa. Y en cuanto para,
+//   el siguiente repintado limpia. Lo que NO se hace es esperar indefinidamente: hay un tope
+//   de parciales (`kMaxParcialesSinCompletoTope`) por si el operador no parase nunca.
+//
+// â˜…â˜… SE LEE EL SELLO DEL ULTIMO TOQUE, NO LA COLA DE ACCIONES. Es la misma regla que en el
+//    aplazamiento del repintado: la cola de toques es del bucle y quitarsela de las manos dejo
+//    el tactil muerto en el b77/b78. `buttonUltimoToqueConfirmado()` solo lee una marca de
+//    tiempo y no se lleva nada por delante.
+constexpr uint32_t kInteraccionRecienteMs = 3000;   // "esta tocando" = toco hace menos de esto
+constexpr uint32_t kMaxParcialesSinCompletoTope = 60;   // tope duro: nunca mas de esto sin limpiar
+
 bool epdTocaCompleto() {
   if (gForzarCompleto) return true;
   if (!gPrevValido) return true;
-  if (gNParcialesSeguidos >= kMaxParcialesSeguidos) return true;
+
+  // Â¿Esta el operador interactuando ahora mismo?
+  const uint32_t ultimoToque = buttonUltimoToqueConfirmado();
+  const bool interactuando =
+      (ultimoToque != 0) &&
+      ((uint32_t)(millis() - ultimoToque) < kInteraccionRecienteMs);
+
+  if (gNParcialesSeguidos >= kMaxParcialesSeguidos) {
+    // Toca limpiar. Si el operador esta tocando, se espera... salvo que ya se haya pasado del
+    // tope duro, y entonces se limpia aunque moleste (mejor eso que una pantalla con fantasmas).
+    if (!interactuando || gNParcialesSeguidos >= kMaxParcialesSinCompletoTope) {
+      if (interactuando && diagTrazaTaller()) {
+        Serial.printf("PANTALLA: completo de limpieza APLAZADO %lu parciales (tope duro)\r\n",
+                      (unsigned long)gNParcialesSeguidos);
+      }
+      return true;
+    }
+    return false;   // se aplaza: el operador esta navegando
+  }
+
   if (gNParcialesSeguidos > 0 && gHuboCompleto &&
       (millis() - gMsCompletoMs) > kMaxMsSinCompleto) return true;
   return false;
@@ -854,12 +1109,12 @@ void epdFlush() {
 }
 
 // ------------------------------------------------------------------ dibujo
-// ★★ LA ORIENTACION (2026-09-14) — CONFIRMADA A OJO POR EL OPERADOR ★★
+// â˜…â˜… LA ORIENTACION (2026-09-14) â€” CONFIRMADA A OJO POR EL OPERADOR â˜…â˜…
 //
 // El contenido se dibuja en coordenadas "logicas" (x a la derecha, y hacia abajo, como en
 // cualquier pantalla) y aqui se traduce a la trama que entiende el panel.
 //
-// ★★ QUE SIGNIFICA CADA NUMERO, Y POR QUE ES ASI ★★
+// â˜…â˜… QUE SIGNIFICA CADA NUMERO, Y POR QUE ES ASI â˜…â˜…
 //
 // El operador confirmo a ojo que la posicion de pie es **la 1**, y pidio que esa fuera la de
 // fabrica. **El numero NO se ha renumerado a proposito**, y el motivo es importante:
@@ -882,8 +1137,8 @@ int gRotacion = 1;   // 1 = DE PIE (posicion natural / de fabrica)
 // configuracion no ha cambiado, y (b) detectar el cambio en caliente cuando el usuario
 // guarda `epdRotation` desde el configurador web o con `set epdRotation N`.
 int gRotacionAplicada = -1;
-// ★ PRUEBA DE QUE EL VALOR LLEGA AL MAPA DE PIXELES (2026-09-14).
-// No basta con enseñar la etiqueta ni la variable global: hay que demostrar que el numero
+// â˜… PRUEBA DE QUE EL VALOR LLEGA AL MAPA DE PIXELES (2026-09-14).
+// No basta con enseÃ±ar la etiqueta ni la variable global: hay que demostrar que el numero
 // que se USA dentro de `px()` cambia de verdad. Aqui se guarda, para las CUATRO primeras
 // rotaciones que se pinten, el valor con el que se calculo el primer pixel. Si salieran
 // dos iguales, el bug estaria aqui y no en la formula.
@@ -901,7 +1156,7 @@ inline void px(int x, int y, bool negro) {
   }
   // El bit 7 es el primero de cada byte.
   const uint32_t bitidx = (uint32_t)yr * EPD_W + (uint32_t)xr;
-  // ★ Aqui esta la prueba de que el valor llega: se guarda el bitidx del PRIMER pixel que
+  // â˜… Aqui esta la prueba de que el valor llega: se guarda el bitidx del PRIMER pixel que
   //   se pinta con cada rotacion. Si dos rotaciones distintas guardaran el mismo numero,
   //   el fallo estaria en este punto y no en la formula.
   {
@@ -923,9 +1178,79 @@ void hLine(int x0, int x1, int y, int grosor = 1) {
     for (int x = x0; x <= x1; x++) px(x, y + g, true);
 }
 
+// â˜… Traza de una LINEA entre dos puntos (Bresenham), con o sin guiones (2026-09-22).
+//   La necesita la pantalla de guiado: la linea del track es lo que se mira al seguir una ruta,
+//   y va con guiones para distinguir lo que QUEDA de lo ya recorrido (en blanco y negro, sin
+//   colores, ese es el recurso que hay).
+//   `guiones`: 0 = linea continua; N > 0 = pinta N pixeles y salta N (discontinua).
+void trazaLinea(int x0, int y0, int x1, int y1, int guiones = 0) {
+  const int dx = abs(x1 - x0), sx = (x0 < x1) ? 1 : -1;
+  const int dy = -abs(y1 - y0), sy = (y0 < y1) ? 1 : -1;
+  int err = dx + dy;
+  int n = 0;
+  for (;;) {
+    // El guion se decide por la distancia recorrida, no por el pixel: asi los huecos son
+    // regulares aunque la linea sea muy inclinada.
+    if (guiones <= 0 || ((n / guiones) % 2) == 0) px(x0, y0, true);
+    n++;
+    if (x0 == x1 && y0 == y1) break;
+    const int e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+
+// â˜…â˜…â˜… ESCALA 0: LA FUENTE DIN 10pt, EL TERCER TAMANO (2026-09-22) â˜…â˜…â˜…
+//
+// POR QUE: el operador hecho en falta un tamano de letra INTERMEDIO. La fuente de 5x7 solo se
+// puede doblar (escala 1 = 7 px, escala 2 = 14 px) y no hay nada en medio. La DIN 10pt del
+// firmware aleman tiene la MISMA altura de letra que la escala 2 (14 px) pero es de ANCHO
+// VARIABLE, asi que ocupa bastante menos a lo ancho: es el tamano que faltaba.
+//     "Finalizar guiado"   escala 2 = 190 px (NO CABE)   DIN 10 = 129 px
+//
+// â˜… SE USA CON `escala == 0`, y todas las funciones de texto lo entienden. Asi no hay que tocar
+//   ninguna de las 167 llamadas que ya existen: las que quieran el tamano nuevo solo tienen que
+//   poner 0 donde antes ponian 2.
+//
+// â˜…â˜… EL DATO QUE HAY QUE SABER ANTES DE TOCAR `dibujaGlyph`: LOS BITS NO VAN FILA A FILA â˜…â˜…
+//   Llevan un contador CONTINUO por todo el caracter, y el byte avanza cada 8 bits. NO se
+//   reinicia el byte en cada fila, que es lo que haria cualquiera. Esta copiado LITERALMENTE de
+//   como lo hace el firmware aleman al pintar (y costo dos intentos dar con ello): si alguien lo
+//   "arregla" para que cada fila empiece en byte nuevo, las letras salen con la parte de arriba
+//   rota.
+//
+// â˜… `yOffset` del glifo es NEGATIVO: es relativo a la LINEA BASE, no al borde de arriba. Por eso
+//   `y` en estas funciones es la parte de ARRIBA de la caja de la linea, y la linea base se
+//   calcula como `y + kDin10Ascenso`.
+static constexpr int kDin10Ascenso = 14;   // de la fuente: alto 23 - descenso 9
+
+void dibujaGlyphDin(int x, int lineaBase, char c, bool negro) {
+  if (c < (char)kDin10.first || c > (char)kDin10.last) return;   // fuera del juego: se ignora
+  const EpdGfxGlyph &g = kDin10.glyph[(uint8_t)c - kDin10.first];
+  uint32_t bitidx = 0;
+  uint8_t byte = 0;
+  for (uint8_t fila = 0; fila < g.height; fila++) {
+    for (uint8_t col = 0; col < g.width; col++) {
+      // â˜… El byte se recarga cada 8 bits, NO al empezar cada fila (ver el aviso de arriba).
+      if ((bitidx & 7u) == 0u) byte = kDin10.bitmap[g.bitmapOffset + (bitidx >> 3)];
+      if (byte & 0x80u)
+        px(x + g.xOffset + (int)col, lineaBase + g.yOffset + (int)fila, negro);
+      byte = (uint8_t)(byte << 1);
+      bitidx++;
+    }
+  }
+}
+
+int drawCharDin(int x, int y, char c, bool negro) {
+  dibujaGlyphDin(x, y + kDin10Ascenso, c, negro);
+  if (c < (char)kDin10.first || c > (char)kDin10.last) return 0;
+  return kDin10.glyph[(uint8_t)c - kDin10.first].xAdvance;
+}
+
 // Un caracter de 5x7, al tamano que se pida (escala 2 = 10 puntos de ancho, legible
 // de sobra en 200x200).
 int drawChar(int x, int y, char c, int escala) {
+  if (escala == 0) return drawCharDin(x, y, c, true);
   const uint8_t *g = EpdFont5x7::glyph(c);
   for (int col = 0; col < 5; col++) {
     const uint8_t bits = g[col];
@@ -944,7 +1269,7 @@ int drawChar(int x, int y, char c, int escala) {
 int drawText(int x, int y, const char *s, int escala = 2) {
   int cx = x;
   for (const char *p = s; *p; p++) {
-    if (*p == '\n') { y += 8 * escala; cx = x; continue; }
+    if (*p == '\n') { y += (escala == 0) ? kDin10.yAdvance : 8 * escala; cx = x; continue; }
     cx += drawChar(cx, y, *p, escala);
   }
   return cx - x;
@@ -954,6 +1279,7 @@ int drawText(int x, int y, const char *s, int escala = 2) {
 // (el "TX" de la cabecera, el aviso de transmision). Es la misma fuente pero escribiendo
 // pixeles BLANCOS en vez de negros.
 int drawCharInv(int x, int y, char c, int escala) {
+  if (escala == 0) return drawCharDin(x, y, c, false);
   const uint8_t *g = EpdFont5x7::glyph(c);
   for (int col = 0; col < 5; col++) {
     const uint8_t bits = g[col];
@@ -971,7 +1297,7 @@ int drawCharInv(int x, int y, char c, int escala) {
 int drawTextInv(int x, int y, const char *s, int escala = 2) {
   int cx = x;
   for (const char *p = s; *p; p++) {
-    if (*p == '\n') { y += 8 * escala; cx = x; continue; }
+    if (*p == '\n') { y += (escala == 0) ? kDin10.yAdvance : 8 * escala; cx = x; continue; }
     cx += drawCharInv(cx, y, *p, escala);
   }
   return cx - x;
@@ -979,6 +1305,7 @@ int drawTextInv(int x, int y, const char *s, int escala = 2) {
 
 // Ancho que va a ocupar el texto: el avance por caracter es 6*escala, igual que en
 // drawText (antes esto no contaba la escala y el texto "centrado" salia descuadrado).
+// â˜… Con escala 0 el avance lo dice la propia fuente, caracter a caracter (ancho variable).
 int textWidth(const char *s, int escala = 2) {
   if (!s) return 0;
   int anchoMax = 0, ancho = 0;
@@ -988,11 +1315,18 @@ int textWidth(const char *s, int escala = 2) {
       ancho = 0;
       continue;
     }
+    if (escala == 0) {
+      if (*p >= (char)kDin10.first && *p <= (char)kDin10.last)
+        ancho += kDin10.glyph[(uint8_t)*p - kDin10.first].xAdvance;
+      continue;
+    }
     ancho += 6 * escala;
   }
   if (ancho > anchoMax) anchoMax = ancho;
   // La ultima columna de separacion no se "ve": se descuenta para que el centrado
-  // quede de verdad centrado.
+  // quede de verdad centrado. Con escala 0 no hay columna de separacion que descontar:
+  // cada caracter ya trae su propio avance.
+  if (escala == 0) return anchoMax;
   return (anchoMax > 0) ? anchoMax - escala : 0;
 }
 
@@ -1002,6 +1336,165 @@ void drawTextCenter(int y, const char *s, int escala = 2) {
   if (x < 0) x = 0;
   drawText(x, y, s, escala);
 }
+
+// ===========================================================================
+//  â˜…â˜…â˜… QUE EL TEXTO QUEPA EN EL PANEL (2026-09-22) â˜…â˜…â˜…
+//
+//  EL PROBLEMA, que reporto el operador: "los popups de bateria baja y creo que alguno mas se
+//  salen de pantalla en los T-Echo; son mas grandes que lo que permite la pantalla".
+//
+//  LA CAUSA, leida en el codigo: `drawText()` NO recorta. Escribe caracter a caracter con
+//  `drawChar()`, y `px()` descarta lo que cae fuera del panel. O sea que un texto mas largo que
+//  la pantalla **pierde los caracteres del final EN SILENCIO**, sin avisar y sin que se pueda
+//  leer nada raro por el cable. Y el recuadro del aviso SI se recortaba (`bw`, en `pintaAviso`),
+//  asi que lo que se veia era un recuadro del ancho correcto con el texto cortado por el borde.
+//
+//  LA CUENTA QUE HAY QUE RESPETAR: el panel son 200 px y el avance por caracter es `6*escala`.
+//    escala 2 -> 12 px por caracter -> **16 caracteres** como mucho
+//    escala 1 ->  6 px por caracter -> **33 caracteres**
+//  Y ejemplo medido: "DURMIENDO: BATERIA BAJA" son 22 caracteres = 252 px. **52 px fuera.**
+//
+//  LAS TRES HERRAMIENTAS DE AQUI, en orden de preferencia (recortar es el ultimo recurso: se
+//  pierde informacion, y en un aviso de bateria baja la informacion es lo unico que hay):
+//    1. `cabeTexto()`      -> Â¿cabe a esta escala?
+//    2. `parteEnEscalas()` -> partir en DOS por el mejor espacio Y decir con que escala se pinta
+//                             cada trozo. Es lo que se prefiere cuando hay sitio vertical: el
+//                             aviso crece hacia arriba en vez de perder letras. **Es la buena**:
+//                             elige el corte que deja las dos lineas lo mas grandes posible (las
+//                             dos a escala 2 si se puede), y no el simple "mas centrado", que
+//                             daba el corte PEOR en el aviso de bateria baja.
+//    3. `recortaA()`       -> y si no hay mas remedio, cortar ANADIENDO un aviso visible de que
+//                             falta texto, para que nadie lea una frase a medias creyendo que
+//                             esta entera.
+// ===========================================================================
+constexpr int kPanelW = EPD_W;   // 200 px: el ancho util de verdad
+
+// Â¿Cabe este texto a esta escala?
+bool cabeTexto(const char *s, int escala, int anchoMax = kPanelW) {
+  return textWidth(s, escala) <= anchoMax;
+}
+
+// Recorta `s` para que quepa a `escala` dentro de `anchoMax`. Si recorta, anade ".." al final
+// (lo que cabe es ".." mas el texto), para que se VEA que falta algo.
+void recortaA(const char *s, int escala, int anchoMax, char *dst, size_t n) {
+  if (!s || !dst || n == 0) return;
+  if (textWidth(s, escala) <= anchoMax) {
+    snprintf(dst, n, "%s", s);
+    return;
+  }
+  const int cabe = anchoMax / (6 * escala);       // caracteres que caben
+  char tmp[256];
+  snprintf(tmp, sizeof(tmp), "%s", s);
+  // Se cortan los bytes justos: los acentos ocupan 2 bytes y no se parten por la mitad.
+  size_t corte = strlen(tmp);
+  if ((int)corte > cabe) {
+    corte = (size_t)(cabe > 2 ? cabe - 2 : 0);
+    while (corte > 0 && ((unsigned char)tmp[corte] & 0xC0) == 0x80) corte--;   // no partir UTF-8
+  }
+  tmp[corte] = '\0';
+  snprintf(dst, n, "%s..", tmp);
+}
+
+// Parte el texto en dos lineas buscando el espacio MAS CENTRADO (no el primero): asi las dos
+// lineas quedan parecidas y el aviso no queda con una larga y otra de dos letras.
+// Si no hay ningun espacio, devuelve false y quien llama decide (normalmente recortar).
+// â˜…â˜… CORREGIDO EL 2026-09-22 (DOS VECES, y las dos por lo mismo: mirar solo una mitad) â˜…â˜…
+//   1) La version anterior comprobaba que las dos lineas cupieran **a escala 1**:
+//          return (textWidth(l1, 1) <= kPanelW && textWidth(l2, 1) <= kPanelW);
+//      y eso es FALSO para la primera, que `pintaAviso` pinta a ESCALA 2. Con
+//      "DURMIENDO: BATERIA BAJA" partia en "DURMIENDO: BATERIA" (18 caracteres = 214 px), que
+//      no cabia: acababa recortado con ".." perdiendo el final del aviso.
+//   2) Y elegia el espacio MAS CENTRADO sin mirar si el trozo cabia. Con
+//      "DURMIENDO: BATERIA BAJA" el mas centrado es el de "BATERIA|BAJA" (18 caracteres),
+//      pero hay OTRO espacio (el de "DURMIENDO:|BATERIA") que da dos trozos de 10 y 12: los
+//      dos caben A ESCALA 2, o sea que se leen grandes. Se estaba eligiendo el corte PEOR.
+//
+//   AHORA: de todos los cortes posibles por espacio, se queda con el que deja las dos lineas
+//   MAS GRANDES posibles (escala 2 las dos > escala 2 y 1 > escala 1 las dos), y dentro de eso,
+//   el mas centrado. Y ademas las COLOCA en su orden natural (`parteEnEscalas`).
+//
+//   Esta funcion solo dice si se puede partir. Quien coloca las lineas y decide la escala es
+//   `parteEnEscalas`, que es la que se usa desde `pintaAviso` y `displayPopupWait`.
+// â˜…â˜… EL CORTE BUENO: el que deja las dos lineas MAS GRANDES posibles (2026-09-22) â˜…â˜…
+//   De todos los espacios del texto, se prueban todos y se elige el mejor corte:
+//     - primero los que dejan las DOS lineas a escala 2 (se leen grandes);
+//     - si no hay, los que dejan las dos a escala 1 (mas pequeno, pero ENTERO);
+//     - y dentro de cada grupo, el mas CENTRADO (que las dos lineas queden parecidas).
+//   Devuelve false si no hay ningun corte que quepa, y entonces quien llama recorta.
+//
+//   â˜… POR QUE ASI: elegir "el mas centrado" a secas daba el corte PEOR en el aviso que reporto
+//     el operador. "DURMIENDO: BATERIA BAJA" tiene dos espacios; el mas centrado parte en
+//     "DURMIENDO: BATERIA" (18 caracteres = 214 px, no cabe a escala 2) y el otro en
+//     "DURMIENDO:" (10) + "BATERIA BAJA" (12), que SI caben los dos a escala 2. Con el criterio
+//     viejo el aviso acababa en letra pequena; con este se lee grande.
+// â˜…â˜… EL MEJOR TAMANO AL QUE CABE UN TEXTO, DE MAYOR A MENOR (2026-09-22) â˜…â˜…
+//   Devuelve la escala MAS GRANDE a la que el texto cabe en el ancho, o -1 si no cabe ni con la
+//   mas pequena. El orden de preferencia es 2 (grande), 0 (DIN 10: igual de alta que la 2 pero
+//   mas estrecha) y 1 (pequena).
+//   â˜… POR QUE HACIA FALTA: hasta ahora la eleccion estaba escrita a mano como
+//   `cabeTexto(x,2) ? 2 : (cabeTexto(x,1) ? 1 : 0)`, y ese `0` final significaba "no cabe" --
+//   chocaba con el 0 nuevo, que es la fuente DIN. Con una sola funcion no hay numeros magicos
+//   repartidos por el fichero y anadir un tamano el dia de manana es tocar UN sitio.
+int mejorEscalaPara(const char *s, int anchoMax = kPanelW) {
+  if (!s) return -1;
+  if (cabeTexto(s, 2, anchoMax)) return 2;
+  if (cabeTexto(s, 0, anchoMax)) return 0;    // el tercer tamano: alta pero estrecha
+  if (cabeTexto(s, 1, anchoMax)) return 1;
+  return -1;
+}
+
+bool parteEnEscalas(const char *s, char *a, size_t na, int *ea,
+                    char *b, size_t nb, int *eb) {
+  if (!s || !a || !na || !b || !nb || !ea || !eb) return false;
+
+  char mejorA[64] = "", mejorB[64] = "";
+  int mejorE1 = 0, mejorE2 = 0;
+  long mejorCentrado = 0x7FFFFFFF;
+  bool hay = false;
+
+  for (const char *p = s; *p; p++) {
+    if (*p != ' ') continue;
+    char x[64], y[64];
+    const int izq = (int)(p - s);
+    if (izq <= 0 || izq >= (int)sizeof(x)) continue;      // ni vacio ni larguisimo
+    snprintf(x, sizeof(x), "%.*s", izq, s);
+    snprintf(y, sizeof(y), "%s", p + 1);
+    if (y[0] == '\0') continue;                           // no partir dejando la 2a vacia
+
+    // Escala de cada linea: la mas grande a la que quepa (2 -> 0 -> 1).
+    const int e1 = mejorEscalaPara(x);
+    const int e2 = mejorEscalaPara(y);
+    if (e1 < 0 || e2 < 0) continue;                       // por este espacio no cabe
+
+    // Â¿Es mejor que lo que ya teniamos? Primero por "las dos grandes", luego por centrado.
+    // Se llama "grande" a la escala 2 o a la DIN 10, que tienen la misma altura.
+    auto esGrande = [](int e) { return e == 2 || e == 0; };
+    const int categoriaNueva = (esGrande(e1) && esGrande(e2)) ? 2 : 1;
+    const int categoriaVieja = (esGrande(mejorE1) && esGrande(mejorE2)) ? 2 : (hay ? 1 : 0);
+    const long centrado = labs((long)izq - (long)(strlen(s) - (size_t)izq - 1));
+    if (!hay || categoriaNueva > categoriaVieja ||
+        (categoriaNueva == categoriaVieja && centrado < mejorCentrado)) {
+      snprintf(mejorA, sizeof(mejorA), "%s", x);
+      snprintf(mejorB, sizeof(mejorB), "%s", y);
+      mejorE1 = e1; mejorE2 = e2;
+      mejorCentrado = centrado;
+      hay = true;
+    }
+  }
+
+  if (!hay) return false;
+  snprintf(a, na, "%s", mejorA);
+  snprintf(b, nb, "%s", mejorB);
+  *ea = mejorE1;
+  *eb = mejorE2;
+  return true;
+}
+
+// â˜… AQUI VIVIA `parteEnDos()`, que partia el texto en dos SIN decidir la escala de cada linea.
+//   Se quito el 2026-09-22 al quedarse sin uso: la logica buena es `parteEnEscalas()`, que
+//   ademas dice con que escala se pinta cada trozo. Dejar dos funciones que parten textos, una
+//   de ellas muerta, es una trampa para el que lea esto despues: se quitaria la equivocada.
+//   Lo que hacia falta de ella (partir "a lo bruto", sin escalas) no lo usa nadie.
 
 // Rectangulo RELLENO: para marcas de esquina. Se usa en la prueba de orientacion.
 void relleno(int x0, int y0, int w, int h) {
@@ -1019,11 +1512,11 @@ void barraH(int x0, int x1, int y, int grosor) {
     for (int x = x0; x <= x1; x++) px(x, y + g, true);
 }
 
-// ★★ IMAGEN DE PRUEBA DE ORIENTACION (2026-09-14) ★★
+// â˜…â˜… IMAGEN DE PRUEBA DE ORIENTACION (2026-09-14) â˜…â˜…
 //
 // SE QUEDA EN LAS HERRAMIENTAS DE TALLER A PROPOSITO. Esta imagen ahorro horas: con texto
 // centrado y simetrico, dos rotaciones distintas parecen la misma y las descripciones
-// ("girado", "boca abajo") se vuelven ambiguas — que es exactamente lo que paso durante
+// ("girado", "boca abajo") se vuelven ambiguas â€” que es exactamente lo que paso durante
 // toda una tarde. Una "F" es **totalmente asimetrica**: se distingue sin ninguna duda en
 // cual de las cuatro orientaciones esta, y ademas se sabe si esta ESPEJADA (cosa que una
 // rotacion no puede provocar). Si algun dia hay que volver a ajustar la orientacion, se
@@ -1055,7 +1548,7 @@ void dibujaPruebaOrientacion() {
   drawText(8, EPD_H - 48, b, 2);
 }
 
-// ★ Dibuja en `gBuf` lo que toque AHORA (el aviso reciente si lo hay, o la escena del
+// â˜… Dibuja en `gBuf` lo que toque AHORA (el aviso reciente si lo hay, o la escena del
 //   carrusel) y deja `gDirty` puesto. Es el UNICO sitio donde se decide que se ve.
 //   Lo usan `displayRefresh()` (el bucle normal) y la prueba del carrusel del comando
 //   `epdparcial` (herramienta de taller): asi lo que se prueba es exactamente lo mismo que
@@ -1102,7 +1595,7 @@ uint32_t gRx = 0, gTx = 0, gDg = 0;
 char gLinea1[40] = "";      // "ultima recibida" o un aviso
 char gLinea2[40] = "";
 uint32_t gLineaMs = 0;
-// ★★ CUANTO DURA UN AVISO: 1,5 S, Y EN UN SOLO REFRESCO (2026-09-15) ★★
+// â˜…â˜… CUANTO DURA UN AVISO: 1,5 S, Y EN UN SOLO REFRESCO (2026-09-15) â˜…â˜…
 //
 // ANTES esto eran 8000 ms y el aviso SUSTITUIA a la escena entera (`dibujaEscena` pintaba
 // solo el aviso). Eso obligaba a DOS refrescos de tinta por cada RX/TX (cada uno ~1,5 s):
@@ -1124,7 +1617,7 @@ constexpr uint32_t kLineaMs = 8000;
 uint32_t gUltimoPintado = 0;
 uint32_t gUltimoToqueMs = 0;     // ultima vez que se pulso un boton (para aplazar el repintado)
 constexpr uint32_t kDebounceToqueMs = 400;  // si tocas antes de esto, no repinta (se encola)
-// ★★ T-ECHO PROJECT BUTTER (2026-09-15): EL APLAZAMIENTO ES SOLO PARA EL TACTIL ★★
+// â˜…â˜… T-ECHO PROJECT BUTTER (2026-09-15): EL APLAZAMIENTO ES SOLO PARA EL TACTIL â˜…â˜…
 // `gUltimoToqueAgrupaMs` es "se esta tocando seguido, agrupa el repintado". Solo lo
 // escriben el TACTIL CAPACITIVO (menuNavigate / displayNextScene(true)), que es el unico
 // que puede ir rapido: no tiene ventana de doble toque, asi que se pueden encadenar
@@ -1132,17 +1625,32 @@ constexpr uint32_t kDebounceToqueMs = 400;  // si tocas antes de esto, no repint
 // El BOTON FISICO ya no lo escribe: su toque corto solo existe cuando han pasado 600 ms
 // desde que solto (la ventana del doble), asi que nunca llega en rafaga y aplazarle el
 // repintado 400 ms era LATENCIA PURA (medida: 400 ms de nada antes de empezar a pintar).
-// ★ VUELTA ATRAS DEL 2026-09-21: de 250 a 400 ms otra vez. Se habia bajado a 250 ms dando
+// â˜… VUELTA ATRAS DEL 2026-09-21: de 250 a 400 ms otra vez. Se habia bajado a 250 ms dando
 //   por hecho que el refresco iba a ser mas rapido (se le habian quitado dos esperas), pero
 //   esas esperas RESULTARON NECESARIAS y se han restaurado: sin ellas la pantalla se queda
 //   en negro. Asi que la ventana vuelve a su valor, que es el que estaba medido y probado.
 constexpr uint32_t kAgrupaToquesMs = 400;   // solo tactil: espera a que dejes de tocar
 uint32_t gUltimoToqueAgrupaMs = 0;
+// â˜…â˜… EL APLAZAMIENTO: DOS INTENTOS DE ARREGLARLO, LOS DOS REVERTIDOS (b79, 2026-09-21) â˜…â˜…
+//   El aplazamiento de 400 ms tiene un defecto conocido y medido: un toque SUELTO paga los
+//   400 ms enteros antes de que se empiece a pintar ("desde que pulso hasta que lo veo
+//   dibujado pasa un poquito de tiempo", dijo el operador). Se intento arreglar dos veces y
+//   las dos salio peor:
+//     - b76, con un tope de 150 ms: empezaba a pintar antes de que el operador acabara de
+//       tocar, pintaba estados INTERMEDIOS y con el bucle ocupado ~700 ms los toques que
+//       quedaban se ejecutaban tarde -> "no guarda si pulso varias veces".
+//     - b77/b78, "por estado": la pantalla miraba/vaciaba la cola de toques del boton, y esa
+//       cola NO es un aviso de trabajo: es EL CONTADOR DE ACCIONES PENDIENTES que el bucle
+//       cobra y ejecuta. Quitarselas = el toque se pierde -> "no funciona el boton capacitivo".
+//   CONCLUSION, y queda escrita para no volver a intentarlo igual: el driver de la pantalla
+//   NO TOCA la cola de toques. El unico dato que puede usar es el sello de tiempo
+//   `gUltimoToqueAgrupaMs`, que no se lleva nada por delante. Para bajar esta latencia hay
+//   que cambiar el MECANISMO, no el numero: ver la nota de la regla, mas abajo.
 constexpr uint8_t kNumEscenas = 8;
 uint8_t gEscena = 0;
 
 // ===========================================================================
-//  ★★ "FIJAR COORDS" EN LA PANTALLA DE TINTA (2026-09-15) ★★
+//  â˜…â˜… "FIJAR COORDS" EN LA PANTALLA DE TINTA (2026-09-15) â˜…â˜…
 // ===========================================================================
 // QUE HACE: el operador elige "Fijar coords" en el menu y el nodo hace TODO el
 // trabajo: enciende el GPS, espera a que fije, deja que la posicion se asiente
@@ -1150,13 +1658,13 @@ uint8_t gEscena = 0;
 // vuelve a apagar el GPS. Es la via para dejar un repetidor publicado en el mapa
 // sin escribir numeros a mano ni depender del configurador web.
 //
-// ★ LA SESION NO SE PROGRAMA AQUI: la lleva el RASTREADOR
+// â˜… LA SESION NO SE PROGRAMA AQUI: la lleva el RASTREADOR
 //   (trackerSetCoordsStart/Tick, ver tracker.h y tracker.cpp), que es quien manda
 //   sobre el GPS. Esta pantalla solo 1) da la orden, 2) ENSENA lo que esta pasando
 //   y 3) guarda la posicion cuando el rastreador la da por buena
 //   (displaySaveCoords, mas abajo). En la OLED ese mismo camino ya funcionaba.
 //
-// ★ POR QUE HACE FALTA UNA PANTALLA PROPIA Y NO UN AVISO: un aviso de los de
+// â˜… POR QUE HACE FALTA UNA PANTALLA PROPIA Y NO UN AVISO: un aviso de los de
 //   `pintaAviso()` caduca a los 8 s y la captura dura MINUTOS (fijar + 20
 //   lecturas). Ademas el bucle principal (main.cpp) ya manda el progreso
 //   ("GPS 3/20") por displayPopup() en CADA muestra, y en tinta eso serian ~20
@@ -1169,7 +1677,7 @@ uint8_t gEscena = 0;
 //     - y los avisos "GPS n/N" del bucle se descartan mientras dura la sesion
 //       (ver displayPopup), que es lo unico que quedaba por atar.
 //
-// ★ COMO SE SALE: la pantalla NO se cierra sola NUNCA por tiempo.
+// â˜… COMO SE SALE: la pantalla NO se cierra sola NUNCA por tiempo.
 //   - Mientras BUSCA o ASIENTA (la captura puede tardar lo que necesite): un toque
 //     de boton CANCELA la sesion, apaga el GPS si lo encendio ella y vuelve al
 //     menu. Era la condicion que puso el operador: "ya que puede tardar lo que
@@ -1178,7 +1686,7 @@ uint8_t gEscena = 0;
 //     pantalla y vuelve al menu/carrusel. El panel es bistable, asi que el
 //     resultado se queda a la vista hasta que el operador quiera.
 //
-// ★ EL GPS LO ENCIENDE Y LO APAGA LA SESION (2026-09-15), no este fichero: ver
+// â˜… EL GPS LO ENCIENDE Y LO APAGA LA SESION (2026-09-15), no este fichero: ver
 //   trackerSetCoordsStart() y el guardia de gpsManage() en tracker.cpp. Por eso
 //   aqui ya NO hay ninguna comprobacion previa del tipo "activa GPS en repetidor":
 //   en modo repetidor la captura funciona igual, sin tocar nada.
@@ -1238,12 +1746,12 @@ void txLogPush(const char *what) {
 }
 
 // ---------------------------------------------------------------------------
-//  ★★ PASO 2: EL CARRUSEL AUTOMATICO (2026-09-15) ★★
+//  â˜…â˜… PASO 2: EL CARRUSEL AUTOMATICO (2026-09-15) â˜…â˜…
 //
 //  Con el refresco parcial ya hecho (1,5 s y SIN parpadeo), cambiar de pantalla solo de vez
 //  en cuando es comodo. Antes NO lo era: cada cambio era un parpadeo de 2 s.
 //
-//  ★ POR QUE NO SE COPIA EL NUMERO DE LA OLED: alli el auto-avance es de 4 SEGUNDOS
+//  â˜… POR QUE NO SE COPIA EL NUMERO DE LA OLED: alli el auto-avance es de 4 SEGUNDOS
 //  (`display.cpp`, kSceneAutoMs), porque su pantalla se redibuja instantaneamente. Aqui cada
 //  cambio se PAGA en el panel: 1,5 s de parcial y, cada cierto numero, un completo de 3,1 s
 //  para limpiar fantasmas (el HANDOVER pide forzar completos de vez en cuando). Ademas, el
@@ -1251,16 +1759,16 @@ void txLogPush(const char *what) {
 //  alimentacion con el GPS** (`periph_pwr.c`): refrescar muy seguido obliga a tener el GPS
 //  encendido. Por eso aqui el carrusel va LENTO a proposito: 45 s.
 //
-//  ★ NO SE REPINTA SI NO HA CAMBIADO NADA: de eso se encarga la huella del contenido
+//  â˜… NO SE REPINTA SI NO HA CAMBIADO NADA: de eso se encarga la huella del contenido
 //  (`huellaContenido()`, ver mas abajo) y el limite `kRepintadoMaxMs`. El carrusel solo
 //  PIDE el cambio de escena; el que decide pintar es el mismo camino de siempre.
 //
-//  ★ PAUSA AL TOCAR EL BOTON (mismo patron que la OLED, adaptado a esta pantalla): si acabas
+//  â˜… PAUSA AL TOCAR EL BOTON (mismo patron que la OLED, adaptado a esta pantalla): si acabas
 //  de elegir una pantalla con el boton, el carrusel se calla 2,5 MINUTOS para que no te
 //  cambie la pantalla mientras la estas leyendo. Cada pulsacion renueva la pausa. El numero
 //  de la OLED (15 s) es demasiado corto para una pantalla que tarda 1,5 s en cambiar.
 //
-//  ★ SE APAGA CON EL AJUSTE QUE YA EXISTE (`sceneAutoAdvance`): hasta ahora ese ajuste no
+//  â˜… SE APAGA CON EL AJUSTE QUE YA EXISTE (`sceneAutoAdvance`): hasta ahora ese ajuste no
 //  hacia NADA en la pantalla de tinta electronica (es el campo de la OLED), asi que la web
 //  ensenaba un interruptor inerte. Con esto pasa a mandar de verdad.
 // ---------------------------------------------------------------------------
@@ -1273,7 +1781,7 @@ bool gAutoAvance = false;      // lo pone la config (sceneAutoAdvance) en cada r
 
 void displayBindConfig(DigiConfig *cfg) {
   gCfg = cfg;
-  // ★ La rotacion viene de la CONFIGURACION PERSISTENTE (config.h: `epdRotation`), no de una
+  // â˜… La rotacion viene de la CONFIGURACION PERSISTENTE (config.h: `epdRotation`), no de una
   //   constante: el panel puede ir montado con distinta orientacion segun la unidad, y
   //   entonces la elige el usuario desde el configurador web o con `set epdRotation N`.
   if (gCfg) {
@@ -1296,7 +1804,7 @@ const char *callSinSSID() {
 }
 
 // ---------------------------------------------------------------------------
-//  SPLASH DE ARRANQUE (2026-09-15) — portado de la OLED y adaptado a la 200x200:
+//  SPLASH DE ARRANQUE (2026-09-15) â€” portado de la OLED y adaptado a la 200x200:
 //  logo de antena + indicativo + nombre del sistema + version + modo, y una BARRA DE
 //  PROGRESO abajo que se va llenando mientras dura (~6 s). Es la "animacion" de la
 //  OLED: en tinta solo se puede redibujar cada ~1,5 s (el tiempo del panel), asi que
@@ -1323,8 +1831,8 @@ void dibujaSplash(int pct) {
     drawTextCenter(132, b, 1);
   }
 
-  // ★★ EL MENSAJE DE DORMIDO, TAMBIEN EN EL ARRANQUE (peticion del operador, 2026-09-16) ★★
-  //   El mismo texto y el mismo tamaño que la pantalla que se queda fija al mandar el nodo
+  // â˜…â˜… EL MENSAJE DE DORMIDO, TAMBIEN EN EL ARRANQUE (peticion del operador, 2026-09-16) â˜…â˜…
+  //   El mismo texto y el mismo tamaÃ±o que la pantalla que se queda fija al mandar el nodo
   //   a dormir (`displaySleepScene`: `sleepMsg` en escala 2), puesto ENTRE la linea del modo
   //   y la barra de progreso, centrado en ese hueco:
   //     - la linea del modo va en y=132 y una letra de escala 1 mide 7 px -> acaba en 139;
@@ -1358,9 +1866,9 @@ void dibujaSplash(int pct) {
 //  El banco de pruebas hacia lo mismo y por eso nunca se quedo mudo.
 // ---------------------------------------------------------------------------
 void displayArrancaPantalla() {
-  // ★ TRAZA DE ARRANQUE (herramienta de taller). Este texto sale por el USB en cuanto el
+  // â˜… TRAZA DE ARRANQUE (herramienta de taller). Este texto sale por el USB en cuanto el
   //   nodo lleva 6 s andando, asi que SI se ve al abrir el puerto.
-  //   ★ Va con `diagTrazaArranque()` (2026-09-16): se sigue viendo siempre (el modo
+  //   â˜… Va con `diagTrazaArranque()` (2026-09-16): se sigue viendo siempre (el modo
   //   diagnostico esta apagado al arrancar, asi que no puede depender de el), pero NO se
   //   le cuela a un programa host: en modo TNC el puerto es suyo. Ver diag.h.
   if (diagTrazaArranque()) {
@@ -1388,7 +1896,7 @@ void displayArrancaPantalla() {
   pinMode(PIN_BUSY, INPUT);
 
   // El bit-bang pone los pines a mano: no depende de ningun periferico (ver la nota
-  // larga del principio). ★ ORDEN IMPORTANTE: si algun dia se quiere ENSEÑAR como esta
+  // larga del principio). â˜… ORDEN IMPORTANTE: si algun dia se quiere ENSEÃ‘AR como esta
   // SPIM2, hay que mirarlo ANTES de dejarselo al GPIO, porque `epdPinesBitBang()`
   // desconecta a proposito el PSEL del periferico.
   if (gTransporte == 1) {
@@ -1453,7 +1961,11 @@ void displayDiagTexto(char *out, size_t n) {
   if (out[0] == 'S') { epdSonda(out, n); return; }
   // 'T' = cambiar de transporte (ver cli.cpp, "epdtrans"): T0 = bit-bang, T1 = SPIM2.
   if (out[0] == 'T') { gTransporte = (out[1] == '1') ? 1 : 0; return; }
-  // 'P' = sonda de PINES: ¿el bit-bang puede gobernar de verdad SCK/MOSI/CS/DC/RST?
+  // 'w' (minuscula) = INTERRUPTOR DE LA VENTANA (ver cli.cpp, "epdventana"): w1 = ventana
+  // (solo se mandan las filas que cambian), w0 = pantalla entera. Es la vuelta atras si la
+  // ventana diera problemas: se apaga desde el cable, sin volver a grabar.
+  if (out[0] == 'w') { gVentanaOn = (out[1] == '1'); return; }
+  // 'P' = sonda de PINES: Â¿el bit-bang puede gobernar de verdad SCK/MOSI/CS/DC/RST?
   if (out[0] == 'P') { epdSondaPines(out, n); return; }
   // 'G' = ROTACION en caliente: out[1] = '0'..'3'. Ver gRotacion/px().
   // Herramienta de taller: permite enderezar la imagen sin volver a grabar.
@@ -1465,7 +1977,7 @@ void displayDiagTexto(char *out, size_t n) {
     gReady = true;
     dibujaPruebaOrientacion();
     epdFullRefresh();
-    // ★ Se informa del valor que se ha aplicado DE VERDAD, no solo de la etiqueta pintada:
+    // â˜… Se informa del valor que se ha aplicado DE VERDAD, no solo de la etiqueta pintada:
     //   si la 0 y la 1 se vieran igual, aqui tiene que verse por que.
     snprintf(out, n,
              "EPD rotacion APLICADA=%d | bitidx del primer pixel con cada rotacion: "
@@ -1478,9 +1990,9 @@ void displayDiagTexto(char *out, size_t n) {
   }
   // 'R' = REPINTAR ahora mismo el estado del nodo, y decir cuantos bytes ha movido.
   // Herramienta de taller: sirve para lanzar un refresco a peticion y ver el resultado sin
-  // depender de lo que pasó en el arranque (que no se ve: abrir el puerto reinicia la placa).
+  // depender de lo que pasÃ³ en el arranque (que no se ve: abrir el puerto reinicia la placa).
   //
-  // ★★ ES LA PRUEBA DEL REFRESCO PARCIAL (Paso 1, 2026-09-15) ★★
+  // â˜…â˜… ES LA PRUEBA DEL REFRESCO PARCIAL (Paso 1, 2026-09-15) â˜…â˜…
   // La primera vez que se llama en un arranque el refresco es COMPLETO (todavia no se sabe
   // que hay pintado). La SEGUNDA vez ya hay plano anterior fiable, asi que el mismo comando
   // hace un PARCIAL: el operador ve la pantalla cambiar sin el parpadeo largo de 2 s. La
@@ -1528,7 +2040,7 @@ void displayDiagTexto(char *out, size_t n) {
   }
   // 'V' = VOLCADO de los registros PIN_CNF de cada pin (herramienta de taller).
   if (out[0] == 'V') { epdVolcadoPines(out, n); return; }
-  // 'W' = ¿MUEVE EL BIT-BANG LOS PINES? Se empuja SCK y MOSI y se LEEN (por eso se dejan
+  // 'W' = Â¿MUEVE EL BIT-BANG LOS PINES? Se empuja SCK y MOSI y se LEEN (por eso se dejan
   // con el buffer de entrada conectado). Si no se mueven, no hay transporte posible.
   if (out[0] == 'W') {
     // Contador de discrepancias entre la lectura por registro y digitalRead().
@@ -1538,7 +2050,7 @@ void displayDiagTexto(char *out, size_t n) {
     epdSpiConfigura();          // suelta el SAADC de P0.31 y reengancha los pines
     epdPinesBitBang();          // y deja el bit-bang mandando
 
-    // ★★ LA PRUEBA QUE ZANJA LA CONTRADICCION ★★
+    // â˜…â˜… LA PRUEBA QUE ZANJA LA CONTRADICCION â˜…â˜…
     // El banco de pruebas lee los pines EMPUJADOS con el buffer de entrada DESCONECTADO y
     // le salen altos; aqui, con el buffer CONECTADO, salen bajos. Para saber cual de las
     // dos cosas es la verdad se mide de las dos maneras, y ademas con pull-up:
@@ -1563,7 +2075,7 @@ void displayDiagTexto(char *out, size_t n) {
       nrf_gpio_pin_set(p);
       delay(2);
       v[i][3] = nrf_gpio_pin_read(p);
-      // ★ Y LA MISMA LECTURA CON digitalRead(), que es lo que usa el core. Si los dos
+      // â˜… Y LA MISMA LECTURA CON digitalRead(), que es lo que usa el core. Si los dos
       //   metodos no dicen lo mismo, el que esta roto es el instrumento (ya ha pasado hoy).
       const int dr = (digitalRead(p) == HIGH) ? 1 : 0;
       if (dr != (int)v[i][3]) gDiscrepancia++;
@@ -1608,7 +2120,7 @@ void displayDiagTexto(char *out, size_t n) {
   //   El primer byte del buffer dice cuantos cambios se quieren (1..9); el numero de escenas
   //   es fijo (kNumEscenas) para que lo que se ve sea exactamente el carrusel de verdad.
   if (out[0] == 'C') {
-    // ★ OJO CON EL NOMBRE: el numero de escenas NO puede llamarse `n` en esta funcion,
+    // â˜… OJO CON EL NOMBRE: el numero de escenas NO puede llamarse `n` en esta funcion,
     //   porque `n` es el TAMANO DEL BUFFER que viene del que llama. Llamarlo `n` hacia que
     //   el snprintf del final recibiera 3 como tamano de destino y truncara el mensaje
     //   (lo cazo el aviso del compilador, -Wformat-truncation). Se llama `nEscenas`.
@@ -1685,7 +2197,7 @@ void displayDiagTexto(char *out, size_t n) {
 bool displayPresent() { return gReady; }
 bool displayIsOn() { return gReady; }
 
-// ★★ VOLCADO DE REGISTROS DE LOS PINES (herramienta de taller) ★★
+// â˜…â˜… VOLCADO DE REGISTROS DE LOS PINES (herramienta de taller) â˜…â˜…
 //
 // Cuando "un pin no sube" hay que mirar los registros, no suponer. Esto saca, para cada
 // pin de la pantalla y para dos pines de control (P0.14 LED y P0.05 libre):
@@ -1751,18 +2263,18 @@ void epdVolcadoPines(char *out, size_t n) {
 }
 
 //
-// ¿Se puede GOBERNAR de verdad cada pin de la pantalla, o algo lo sujeta?
+// Â¿Se puede GOBERNAR de verdad cada pin de la pantalla, o algo lo sujeta?
 //
 // COMO SE MIDE, y esto hay que hacerlo bien (el primer intento salio mal): no vale
 // `nrf_gpio_cfg_output()` + leer, porque esa configuracion DESCONECTA el buffer de
 // entrada del pin y la lectura sale SIEMPRE 0 (con lo que TODO parecia sujeto a masa,
 // incluido el LED azul, que no lo esta). La forma buena es:
 //     1) configurar el pin como entrada SIN resistencia y leerlo con el pin suelto
-// ★★ SONDA DE PINES (comando "epdpines") — LA PRUEBA QUE SEPARA DOS MUNDOS ★★
+// â˜…â˜… SONDA DE PINES (comando "epdpines") â€” LA PRUEBA QUE SEPARA DOS MUNDOS â˜…â˜…
 //
-// ¿Se puede GOBERNAR de verdad cada pin de la pantalla, o algo lo sujeta?
+// Â¿Se puede GOBERNAR de verdad cada pin de la pantalla, o algo lo sujeta?
 //
-// ★★ DOS TRAMPAS DE INSTRUMENTACION, Y HE CAIDO EN LAS DOS (2026-09-14) ★★
+// â˜…â˜… DOS TRAMPAS DE INSTRUMENTACION, Y HE CAIDO EN LAS DOS (2026-09-14) â˜…â˜…
 //
 //  1. `nrf_gpio_cfg_output()` DESCONECTA el buffer de entrada del pin, asi que leer despues
 //     da SIEMPRE 0: con eso, TODO parecia sujeto a masa, incluido el LED azul.
@@ -1770,7 +2282,7 @@ void epdVolcadoPines(char *out, size_t n) {
 //     los pines empujados a 1: `nrf_gpio_pin_read()` devuelve 0 y `digitalRead()` devuelve 1
 //     **para los mismos tres pines y en el mismo instante** (3 discrepancias de 3). Es
 //     exactamente el mismo fallo que el proyecto ya habia documentado para el registro `IN`
-//     (docs/HELLO_WORLD_TECHO.md §4.1) y en el que yo he vuelto a caer.
+//     (docs/HELLO_WORLD_TECHO.md Â§4.1) y en el que yo he vuelto a caer.
 //     -> POR ESO AQUI SE LEE SIEMPRE CON `digitalRead()`.
 //
 // Esto importa porque con el instrumento malo llegue a conclusiones falsas ("los pines
@@ -1782,7 +2294,7 @@ void epdVolcadoPines(char *out, size_t n) {
 // ningun chip. Si el LED no da 0/01, el que falla es el METODO y no la pantalla.
 void epdSondaPines(char *out, size_t n) {
   if (!out || !n) return;
-  // ★ PRIMERO SE SUELTA EL PERIFERICO DE LOS PINES. Si SPIM2 tiene PSEL apuntando a
+  // â˜… PRIMERO SE SUELTA EL PERIFERICO DE LOS PINES. Si SPIM2 tiene PSEL apuntando a
   //   P0.31/P0.29, el GPIO no manda ahi y la sonda diria "no obedecen" siendo mentira.
   NRF_SPIM2->ENABLE = 0;
   NRF_SPIM2->PSEL.SCK = 0x80000000u;    // desconectado
@@ -1838,7 +2350,7 @@ void epdSondaPines(char *out, size_t n) {
   delay(2);
   const int led1 = nrf_gpio_pin_read(pLed);
 
-  // ★ ¿QUIEN SUJETA P0.31? La bateria se mide con analogRead(31) en src/sensors.cpp, y el
+  // â˜… Â¿QUIEN SUJETA P0.31? La bateria se mide con analogRead(31) en src/sensors.cpp, y el
   //   SCK de la pantalla ES P0.31. Aqui se lee el registro PSELP del SAADC: si apunta a
   //   AIN7, el ADC tiene ese pin cogido (y el ADC apunta a un pin mientras esta activo).
   const uint32_t saadcPsel = (uint32_t)NRF_SAADC->CH[0].PSELP;
@@ -1846,7 +2358,7 @@ void epdSondaPines(char *out, size_t n) {
   char saadc[80];
   snprintf(saadc, sizeof(saadc), "SAADC ENABLE=%lu CH0.PSELP=%lu%s",
            (unsigned long)saadcEn, (unsigned long)saadcPsel,
-           (saadcPsel == SAADC_CH_PSELP_PSELP_AnalogInput7) ? " (¡apunta a AIN7 = P0.31!)" : "");
+           (saadcPsel == SAADC_CH_PSELP_PSELP_AnalogInput7) ? " (Â¡apunta a AIN7 = P0.31!)" : "");
 
   // Se dejan como estaban (reposo: CS y DC altos, reloj y datos bajos, reset arriba).
   nrf_gpio_cfg_output(PIN_SCK);  nrf_gpio_pin_clear(PIN_SCK);
@@ -1868,7 +2380,7 @@ void epdSondaPines(char *out, size_t n) {
                   : "TODOS SE GOBIERNAN: el bit-bang llega a los pines y al panel le llega corriente");
 }
 
-// ★ SONDA DEL PERIFERICO, A PETICION (comando "epdsonda" del USB) — HERRAMIENTA DE TALLER.
+// â˜… SONDA DEL PERIFERICO, A PETICION (comando "epdsonda" del USB) â€” HERRAMIENTA DE TALLER.
 //
 // Existe porque "la transferencia se atasca" es un sintoma que no dice POR QUE. Esto
 // lanza UNA transferencia de 1 byte y va leyendo los registros del periferico, para
@@ -1890,7 +2402,7 @@ void epdSonda(char *out, size_t n) {
 
   epdSpiConfigura();
 
-  // ★ ENABLE tiene que ser exactamente 1. Se limpia a mano (no con nrf_spim_disable,
+  // â˜… ENABLE tiene que ser exactamente 1. Se limpia a mano (no con nrf_spim_disable,
   //   que hace read-modify-write y conserva los bits raros).
   NRF_SPIM2->ENABLE = 0;
   NRF_SPIM2->PSEL.SCK = (uint32_t)PIN_SCK;
@@ -1912,7 +2424,7 @@ void epdSonda(char *out, size_t n) {
   const uint32_t ram1 = (uint32_t)NRF_POWER->RAM[1].POWER;
   const uint32_t ram7 = (uint32_t)NRF_POWER->RAM[7].POWER;
 
-  // ★ ¿RESPONDE EL PERIFERICO A SUS TAREAS? Prueba que no depende de EasyDMA ni de los
+  // â˜… Â¿RESPONDE EL PERIFERICO A SUS TAREAS? Prueba que no depende de EasyDMA ni de los
   //   pines: TASKS_SUSPEND tiene que producir EVENTS_STOPPED. Si esto no pasa, el
   //   periferico no esta gobernando NADA (esta apagado o alguien lo tiene tomado).
   NRF_SPIM2->TASKS_SUSPEND = 1;
@@ -1925,7 +2437,7 @@ void epdSonda(char *out, size_t n) {
   const uint32_t evStop = (uint32_t)NRF_SPIM2->EVENTS_STOPPED;
   NRF_SPIM2->EVENTS_STOPPED = 0;
 
-  // ★ LA PRUEBA QUE DECIDE: transferencia LARGA (5000 bytes) vigilando el contador.
+  // â˜… LA PRUEBA QUE DECIDE: transferencia LARGA (5000 bytes) vigilando el contador.
   //   Si el periferico arranca, MAXCNT se queda en 5000 y AMOUNT va bajando; si esta
   //   muerto, los dos se quedan raros y ademas EVENTS_STARTED no sube nunca.
   static uint8_t grande[EPD_BUFSZ];
@@ -2014,7 +2526,7 @@ void displayBacklightTick(uint32_t nowMs) {
 // existe en el Plus (PIN_BUZZER definido).
 void displayBeep() {
 #if defined(PIN_BUZZER)
-  // ★ EL ZUMBADOR SOLO SUENA SI ESTA PLACA ES UN PLUS (2026-09-15).
+  // â˜… EL ZUMBADOR SOLO SUENA SI ESTA PLACA ES UN PLUS (2026-09-15).
   //   El zumbador es un GPIO normal (P0.06): NO se puede preguntar si existe. Pero el motor
   //   haptico va con el (solo los lleva el Plus) y ese SI se detecta por I2C, asi que se usa
   //   de carne de identidad. En un T-Echo normal el firmware NO toca P0.06 en absoluto: no
@@ -2036,7 +2548,7 @@ void displayBeep() {
 #endif
 }
 
-// ★ AVISO SONORO DE BATERIA BAJA (2026-09-15). Melodia descendente "triste", dos frases,
+// â˜… AVISO SONORO DE BATERIA BAJA (2026-09-15). Melodia descendente "triste", dos frases,
 // la segunda mas grave y una nota final larga: el clasico aviso de bateria baja de los
 // Nokia viejos (peticion del operador). Se genera igual que el pitido, con ondas cuadradas
 // a mano, asi que las notas se cambian AQUI: (frecuencia en Hz, duracion en ms), 0 = pausa.
@@ -2079,14 +2591,14 @@ void displaySleep() {
   gAsleep = true;
 }
 
-// ★ PANTALLA DE DORMIDO (2026-09-15): se dibuja ANTES de entrar en System OFF. La tinta es
+// â˜… PANTALLA DE DORMIDO (2026-09-15): se dibuja ANTES de entrar en System OFF. La tinta es
 //   bistable, asi que la imagen queda fijada aunque el nodo este apagado. Muestra: zzz,
-//   el indicativo del dueño EN GRANDE (sin SSID) y el mensaje libre (si lo dejo puesto).
+//   el indicativo del dueÃ±o EN GRANDE (sin SSID) y el mensaje libre (si lo dejo puesto).
 void displaySleepScene() {
   clearBuf(true);
   // zzz dormido (en grande)
   drawTextCenter(40, "zZz Zzz", 3);
-  // indicativo del dueño, en GRANDE (sin SSID), como el splash de inicio
+  // indicativo del dueÃ±o, en GRANDE (sin SSID), como el splash de inicio
   drawTextCenter(88, callSinSSID(), 4);
   // mensaje libre (telefono u otro), si lo dejo configurado
   if (gCfg && gCfg->sleepMsg[0]) {
@@ -2103,7 +2615,13 @@ void displaySplash() { /* la pantalla se pinta entera en el primer refresco */ }
 
 void displayPinSplash(const char *pin, bool fromStack) {
   (void)fromStack;
-  snprintf(gLinea1, sizeof(gLinea1), "EMPAREJAR: %s", pin ? pin : "------");
+  // â˜… EL RELLENO SON 5 GUIONES, NO 6 (2026-09-22): "EMPAREJAR: ------" son 17 caracteres y a
+  //   escala 2 el tope son 16 (200 px), o sea 202 px: se salia 2 px por el borde. Con 5 guiones
+  //   son 16 exactos y cabe. Lo cazo el comprobador de textos al medir el PEOR CASO de cada
+  //   conversion (no al mirar los literales): por eso hay que medir el peor caso.
+  //   Un PIN de verdad son 6 digitos, asi que el hueco no se nota: los guiones solo salen
+  //   cuando todavia no hay PIN.
+  snprintf(gLinea1, sizeof(gLinea1), "EMPAREJAR: %s", pin ? pin : "-----");
   gLinea2[0] = '\0';
   gLineaMs = millis();
   gDirty = true;
@@ -2113,13 +2631,13 @@ void displayPinSplashClear() { gLinea1[0] = '\0'; gLineaMs = 0; gDirty = true; }
 bool displayPinSplashActive() { return false; }
 
 // ===========================================================================
-//  ★★ MENU EN PANTALLA (2026-09-15) — PORTADO DE LA OLED a la tinta electronica ★★
+//  â˜…â˜… MENU EN PANTALLA (2026-09-15) â€” PORTADO DE LA OLED a la tinta electronica â˜…â˜…
 // ===========================================================================
 // Two levels, like the OLED: a list of CATEGORIES, then the items of one category.
 //   - Capacitive (P0.11) = navigate (move selection / change edit value)
-//   - Físico corto (P1.10 short) = enter / confirm
-//   - Físico largo (P1.10 long) = go back
-// Data model translated 1:1 from display.cpp (see §P.11 in the bitácora). Values
+//   - FÃ­sico corto (P1.10 short) = enter / confirm
+//   - FÃ­sico largo (P1.10 long) = go back
+// Data model translated 1:1 from display.cpp (see Â§P.11 in the bitÃ¡cora). Values
 // are persisted through the SAME path as the `set` command (typedSet + storeSave),
 // and actions call the SAME functions as the OLED menu.
 namespace {
@@ -2129,9 +2647,22 @@ enum MenuKind {
   MK_HEADER, MK_INT, MK_BOOL, MK_ENUM, MK_ENUM_F, MK_FLOAT,
   MK_STRING, MK_PATH, MK_ENUM_CYCLE, MK_ACTION,
 };
+// â˜… `ACT_SHUTDOWN` = APAGAR de verdad, a mano (2026-09-22). Es DISTINTA de `ACT_SLEEP`:
+//   dormir despierta al subir la tension (nodo solar); apagar no despierta con nada y solo
+//   vuelve con el boton de reset. Ver el comentario largo de `powerShutdownNow()`.
 enum { ACT_NONE = 0, ACT_BEACON, ACT_TELEM, ACT_TELEM_META, ACT_MUTE, ACT_SLEEP,
+       ACT_SHUTDOWN,
        ACT_REBOOT, ACT_DFU, ACT_RESET, ACT_WIPE, ACT_TRACKER_BEACON, ACT_BAT,
-       ACT_SET_COORDS, ACT_GPS_INFO, ACT_MSG_SEND, ACT_PROFILES };
+       ACT_SET_COORDS, ACT_GPS_INFO, ACT_MSG_SEND, ACT_PROFILES,
+       // â˜… Las filas de la seccion Tracks (2026-09-22). TRES de ellas NO se ejecutan solas: lo
+       //   que hacen es ABRIR una de las pantallas del modulo de tracks (ver `pantallaTracks()`),
+       //   y cual de ellas se decide alli dentro. Por eso no aparecen en `menuEjecutaAccion`.
+       //   â˜… ACT_TRK_NUEVO es la CUARTA y SI se ejecuta aqui: tira el track en vivo y empieza uno
+       //     nuevo desde donde estas. Se hace como accion de menu (y no como fila dentro de la
+       //     pantalla de tracks) para REUTILIZAR el mecanismo de confirmacion que ya existe para
+       //     las acciones destructivas: esto borra algo que el operador ha grabado andando, asi
+       //     que no puede pasar a la primera pulsacion.
+       ACT_TRACKS, ACT_SLOT, ACT_HOME, ACT_TRK_NUEVO };
 struct MenuItem {
   const char *label; MenuKind kind; const char *key;
   int min, max, step;
@@ -2155,7 +2686,7 @@ const float kBwVals[] = {62.5f,125.0f,250.0f,500.0f};
 const char *kPathOpts[] = {"0","WIDE1-1","WIDE1-1,WIDE2-1","WIDE1-1,WIDE2-2",
                            "WIDE2-1","WIDE2-2","RFONLY",nullptr};
 
-// ★★ ICONO DEL MAPA POR PERFIL (2026-09-15) ★★
+// â˜…â˜… ICONO DEL MAPA POR PERFIL (2026-09-15) â˜…â˜…
 // Los codigos NO se escriben aqui: se LEEN de la configuracion
 // (gCfg->profileSymbol[]/profileOverlay[]), que es donde viven los valores de
 // fabrica (config.h). Asi, si algun dia se cambia un icono por defecto, el menu y
@@ -2214,7 +2745,7 @@ const MenuItem kMenu[] = {
   {"Enviar WX", MK_BOOL, "wxSensorActive", 0,0,0, nullptr, nullptr, nullptr, 0, kMAll},
   {"Enviar telem", MK_BOOL, "sendBatteryTelemetry", 0,0,0, nullptr, nullptr, nullptr, 0, kMAll},
   {"Telem cada (min)", MK_INT, "telemetryIntervalMin", 0,720,15, nullptr, nullptr, nullptr, 0, kMAll},
-  // ★ INTERVALO DE METEOROLOGIA (2026-09-15): ajuste NUEVO, justo debajo del de
+  // â˜… INTERVALO DE METEOROLOGIA (2026-09-15): ajuste NUEVO, justo debajo del de
   //   telemetria y con su mismo formato (MK_INT, 0..720, paso 15: 0 = no automatico,
   //   el resto 15..720 min, igual que la regla de config.cpp). El paquete WX iba fijo
   //   a 15 minutos dentro de main.cpp y no habia manera de tocarlo desde aqui.
@@ -2238,17 +2769,33 @@ const MenuItem kMenu[] = {
   {"Reiniciar", MK_ACTION, nullptr, 0,0,0, nullptr, nullptr, nullptr, ACT_REBOOT, kMAll},
   {"Valores fabrica", MK_ACTION, nullptr, 0,0,0, nullptr, nullptr, nullptr, ACT_RESET, kMAll},
   {"Borrado", MK_ACTION, nullptr, 0,0,0, nullptr, nullptr, nullptr, ACT_WIPE, kMAll},
+  // == Tracks (2026-09-22) ==
+  // â˜… Las tres filas de la seccion. NO son ajustes: son PUERTAS a las pantallas del modulo de
+  //   tracks, y por eso van con `ACT_NONE` y una `key` propia:
+  //     - el texto de cada fila lo genera el pintado de seccion (caso especial, mas abajo),
+  //       porque cambia segun lo que haya guardado: cuantos puntos lleva el track en vivo, o
+  //       cuantas ranuras hay cargadas;
+  //     - y al pulsarlas, `menuShort()` las intercepta por su `key` y ABRE la pantalla que
+  //       toca, sin pasar por `menuEjecutaAccion` (que es para las acciones de verdad, como
+  //       reiniciar o borrar). Con `ACT_NONE` no hay forma de que acaben en el editor.
+  {"Track en vivo", MK_ACTION, "tkVivo", 0,0,0, nullptr, nullptr, nullptr, ACT_NONE, kMAll},
+  {"Ranuras: -", MK_ACTION, "tkSlots", 0,0,0, nullptr, nullptr, nullptr, ACT_NONE, kMAll},
+  {"Volver a casa", MK_ACTION, "tkCasa", 0,0,0, nullptr, nullptr, nullptr, ACT_NONE, kMAll},
 };
 constexpr int kMenuCount = (int)(sizeof(kMenu)/sizeof(kMenu[0]));
 const char *kMenuSections[] = {
   "Modo","GPS","Balizas","Mensajes","Tracker","Radio","Digi","APRS",
-  "Bluetooth","Sensores","Pantalla","Energia","Remoto","Ajustes", nullptr
+  // â˜… "Tracks" VA LA ULTIMA A PROPOSITO (2026-09-22): asi solo hay que tocar DOS numeros
+  //   (el "Salir" de en medio y el total) en vez de desplazar las 14 secciones de delante.
+  //   Y es una seccion de las de verdad: sus filas se pintan con el mismo codigo que las
+  //   demas, a la misma escala y con las mismas dos filas de navegacion.
+  "Bluetooth","Sensores","Pantalla","Energia","Remoto","Ajustes","Tracks", nullptr
 };
 // item index of the first item of each section
-// ★ OJO (2026-09-15): estos dos arrays van por INDICE ABSOLUTO dentro de kMenu[], asi
+// â˜… OJO (2026-09-15): estos dos arrays van por INDICE ABSOLUTO dentro de kMenu[], asi
 //   que al anadir "WX cada (min)" en Sensores (posicion 44) hay que desplazar +1 todas
 //   las secciones siguientes: Pantalla 46->47, Energia 49->50, Remoto 53->54, Ajustes 56->57.
-const int kMenuSectionFirst[] = {0,1,5,10,12,18,24,27,39,41,47,50,54,57};
+const int kMenuSectionFirst[] = {0,1,5,10,12,18,24,27,39,41,47,50,54,57,60};
 
 // --------------- menu state ---------------
 bool gMenuOn = false;
@@ -2259,28 +2806,41 @@ char gEditBuf[32] = "";   // buffer while editing a value
 int gEditPos = 0;
 int gMenuEditItemAbs = 0; // indice absoluto del item que se esta editando
 uint32_t gMenuLastActMs = 0;  // ultima interaccion con el menu (para el auto-cierre de 15 s)
-// ★ SUBMENU DE PERFILES (2026-09-15): editor dedicado para 1) elegir el perfil activo y
+// â˜… SUBMENU DE PERFILES (2026-09-15): editor dedicado para 1) elegir el perfil activo y
 //   2) editar su SSID/tiempos/metros. gMenuPerfMode: 0=off, 1=lista de perfiles,
 //   2=editar los campos del perfil seleccionado.
 int gMenuPerfMode = 0;
-int gMenuPerfIdx = 0;   // 0..3 (fijo, peaton, bici, coche) o fila de campos
+// â˜…â˜… OJO: `gMenuPerfIdx` SIGNIFICA DOS COSAS DISTINTAS SEGUN EL MODO (2026-09-22) â˜…â˜…
+//     - modo 1 (lista de perfiles): la FILA resaltada, 0..kPerfFilas-1, o sea
+//          0="< Volver", 1="Salir", 2..5=perfiles, 6="Editar ajs."
+//          (antes eran 0..4 y el sentido de la fila 0 era OTRO: elegia un perfil)
+//     - modo 2 (editando campos): el PERFIL que se edita, 0..3, y NO se usa para pintar filas
+//   Por eso hay que tener cuidado al tocarlo: en modo 1 vale hasta 6 y no puede indexar ningun
+//   array de 4; en modo 2 siempre vale 0..3. Se reasigna al entrar en cada modo.
+int gMenuPerfIdx = 0;
+// â˜… CUANTAS FILAS TIENE LA LISTA DE PERFILES (2026-09-22): 2 de navegacion ("< Volver" y
+//   "Salir"), los 4 perfiles y la de editar. Vive AQUI, junto al indice, y no mas abajo con el
+//   resto del editor, porque `menuShort()` la necesita para el tope del resaltado y esta antes
+//   en el fichero. (Definirla abajo fue un error de compilacion: 'was not declared in this
+//   scope'.)
+constexpr int kPerfFilas = 7;
 int gMenuPerfField = 0; // 0=SSID 1=slow 2=fast 3=dist 4=ICONO (ver kPerfCampos)
-// ★ CAMPOS DEL PERFIL (2026-09-15): eran CUATRO y ahora son CINCO. El quinto es el
+// â˜… CAMPOS DEL PERFIL (2026-09-15): eran CUATRO y ahora son CINCO. El quinto es el
 //   ICONO DEL MAPA, que va con el perfil (config.h: profileSymbol/profileOverlay).
 //   El numero se usa en la navegacion (menuNavigate/menuShort) y en el dibujo
 //   (menuPinta): si se anade otro campo, se cambia AQUI y en las etiquetas de
 //   menuPinta, y los tres sitios siguen de acuerdo.
 constexpr int kPerfCampos = 5;
-// ★ SUBMENU DE OPCIONES (2026-09-15): para los enum (Modo, TNC, Frecuencia...) se abre un
+// â˜… SUBMENU DE OPCIONES (2026-09-15): para los enum (Modo, TNC, Frecuencia...) se abre un
 //   submenu donde CADA opcion ocupa una linea, con "Volver" y "Salir" encima, la activa
 //   marcada con ">", y scroll. Misma letra y estilo que el resto del menu.
 int gMenuEnumAbs = -1;      // item cuyo submenu de opciones esta abierto
 int gMenuEnumIdx = 0;       // fila del submenu: 0=Volver 1=Salir 2+=opcion
-// ★ CONFIRMACION DE ACCIONES DESTRUCTIVAS (2026-09-15, arreglo de la auditoria G2).
+// â˜… CONFIRMACION DE ACCIONES DESTRUCTIVAS (2026-09-15, arreglo de la auditoria G2).
 //   Mismo par de variables que la OLED (display.cpp: gConfirmAction/gConfirmUntil): la
 //   accion NO se ejecuta a la primera pulsacion; se pide confirmacion y solo la
 //   SEGUNDA pulsacion de la MISMA accion dentro de la ventana la lleva a cabo.
-//   ★★ CUAL PULSACION, EN ESTA PANTALLA: LA CORTA (corregido el 2026-09-16; hasta entonces
+//   â˜…â˜… CUAL PULSACION, EN ESTA PANTALLA: LA CORTA (corregido el 2026-09-16; hasta entonces
 //      estos comentarios decian "larga", que es justo el gesto que CANCELA). Aqui el mapa es
 //      CORTO = entrar/ejecutar/confirmar y LARGO = volver atras, al reves que en la OLED:
 //      ver el comentario largo de la pantalla de confirmacion (menuPinta) y menuLong().
@@ -2288,7 +2848,7 @@ int gMenuEnumIdx = 0;       // fila del submenu: 0=Volver 1=Salir 2+=opcion
 int gConfirmAction = 0;
 uint32_t gConfirmUntil = 0;
 
-// Valor ACTUAL de la clave `it` como texto (para mostrar a la derecha del ítem).
+// Valor ACTUAL de la clave `it` como texto (para mostrar a la derecha del Ã­tem).
 // Para los enum se muestra la ETIQUETA (opts[i]) que coincide con el valor actual.
 const char *menuValorTexto(const MenuItem &it) {
   static char buf[24];
@@ -2319,16 +2879,16 @@ const char *menuValorTexto(const MenuItem &it) {
   return buf;
 }
 
-// ★★ EL PROTOCOLO DEL TNC, EN PALABRA Y NO EN NUMERO (2026-09-15) ★★
+// â˜…â˜… EL PROTOCOLO DEL TNC, EN PALABRA Y NO EN NUMERO (2026-09-15) â˜…â˜…
 // La configuracion guarda `tncProtocol` como NUMERO (config.h: 0 = OFF, 1 = TNC2,
 // 2 = KISS) y el operador quiere LEERLO en la pantalla como palabra.
-//   ★ LA TABLA ES CORTA A PROPOSITO: la palabra se pinta en una fila de la lista, que
+//   â˜… LA TABLA ES CORTA A PROPOSITO: la palabra se pinta en una fila de la lista, que
 //     va a escala 2, o sea 6*2 = 12 px por caracter y la fila empieza en x=14: caben
 //     15 caracteres de los 200 del panel. Con el "TNC: " delante, lo mas largo es
 //     "TNC: TNC2" / "TNC: KISS" (9 caracteres = 108 px), asi que sobra sitio. NO se
 //     usan las etiquetas largas del submenu ("Apagado", "TNC2 texto"): esas viven en
 //     kTncOpts y alli si caben, porque el submenu pinta una opcion por linea.
-//   ★ SE BUSCA POR VALOR, NO POR INDICE: si la configuracion trae un numero que no es
+//   â˜… SE BUSCA POR VALOR, NO POR INDICE: si la configuracion trae un numero que no es
 //     ninguno de los tres (lo puede dejar un configurador tocado a mano), se contesta
 //     "?" en vez de ensenar una palabra que no le corresponde. El valor se lee de gCfg,
 //     que es la MISMA copia que usa el resto del firmware: no hay una segunda verdad.
@@ -2347,7 +2907,7 @@ bool menuSave(const char *key, const char *val) {
   if (!gCfg || !key) return false;
   String err;
   bool ok = cliTypedSet(*gCfg, String(key), String(val ? val : ""), err);
-  // ★ EL GUARDADO EN LA FLASH VA APARTE DE LA TRAZA (2026-09-16): estaban en la MISMA
+  // â˜… EL GUARDADO EN LA FLASH VA APARTE DE LA TRAZA (2026-09-16): estaban en la MISMA
   //   linea (`if (ok) { storeSave(*gCfg); Serial.printf(...); }`) y al agrupar la traza en
   //   el modo diagnostico se lo llevaba por delante. Aqui NO se toca: guardar es la funcion
   //   de esta funcion; lo unico que se calla es el aviso por el USB.
@@ -2364,7 +2924,7 @@ bool menuSave(const char *key, const char *val) {
 // la baliza (aprs.cpp). Aqui NO hay una segunda copia del ajuste: si el operador
 // lo cambia desde el configurador web, el menu ensena el valor nuevo en el acto.
 //
-// ★ NO se pasa por cliTypedSet()/configFromJson(): `profileSymbol` no es una clave
+// â˜… NO se pasa por cliTypedSet()/configFromJson(): `profileSymbol` no es una clave
 //   suelta de la configuracion (es un array de cuatro), asi que el motor de `set`
 //   no la conoce. Se escribe en la configuracion y se guarda con storeSave(), que
 //   es el mismo final del camino (la copia se serializa entera a la flash).
@@ -2404,7 +2964,7 @@ void iconoPerfilPon(int perfil, int idx) {
 }  // namespace (datos del menu)
 
 // ---------------------------------------------------------------------------
-//  MOTOR DEL MENU (funciones de display.h) — NAVEGACION + EDICION + ACCIONES.
+//  MOTOR DEL MENU (funciones de display.h) â€” NAVEGACION + EDICION + ACCIONES.
 //  Mapa de botones (operador, 2026-09-15): capacitivo = navegar / cambiar valor;
 //  fisico corto = entrar / confirmar; fisico largo = volver atras. Pinta sobre gBuf.
 //  Modelo de edicion: al entrar se edita el item; NAVEGAR (capacitivo) cambia y GUARDA
@@ -2414,7 +2974,7 @@ void iconoPerfilPon(int perfil, int idx) {
 
 #define kMenuSectores 15   // 14 secciones + el final (indice de kMenuSectionFirst)
 // Mismo desplazamiento +1 que en kMenuSectionFirst por el item nuevo "WX cada (min)".
-const int kMenuSectionEnd[] = {1,5,10,12,18,24,27,39,41,47,50,54,57,60,60};
+const int kMenuSectionEnd[] = {1,5,10,12,18,24,27,39,41,47,50,54,57,60,63,63};
 
 bool menuIsOpen() { return gMenuOn; }
 bool menuIsEditing() { return gMenuEditing; }
@@ -2428,7 +2988,7 @@ static bool menuItemVisible(const MenuItem &it) {
   return true;
 }
 
-// ★★ ITEMS QUE EN ESTA PLACA NO HACEN NADA (2026-09-15, arreglo de la auditoria G3) ★★
+// â˜…â˜… ITEMS QUE EN ESTA PLACA NO HACEN NADA (2026-09-15, arreglo de la auditoria G3) â˜…â˜…
 //
 // El problema que arregla: hay tres ajustes que el menu de la tinta GUARDA en la flash y
 // que despues NADIE lee en la tinta, asi que el operador los toca, ve que se guardan y cree
@@ -2458,7 +3018,7 @@ static bool avisoItemInerte(const char *key) {
   return false;
 }
 
-// Texto que se anade a la etiqueta en la lista. ★ TIENE QUE SER MUY CORTO: las filas se
+// Texto que se anade a la etiqueta en la lista. â˜… TIENE QUE SER MUY CORTO: las filas se
 // pintan a escala 2 (una letra ~12 px en un panel de 200), y "Apagar pantalla(s)" ya mide
 // 19 caracteres = 228 px, o sea que se sale por la derecha EL SOLO. Por eso no cabe un
 // "(no)" detras: se pone un asterisco de una letra y el significado se explica en la LEYENDA
@@ -2468,7 +3028,7 @@ static const char *etiquetaInerte(const char *key) {
   return avisoItemInerte(key) ? " *" : "";
 }
 
-// ¿Esta CATEGORIA tiene algun item inerte? Sirve para pintar la leyenda solo donde hace
+// Â¿Esta CATEGORIA tiene algun item inerte? Sirve para pintar la leyenda solo donde hace
 // falta, en vez de en las 14 secciones.
 static bool seccionTieneInerte(int catAbs) {
   if (catAbs < 0) return false;
@@ -2481,9 +3041,9 @@ static bool seccionTieneInerte(int catAbs) {
 }
 
 // ---- ACCIONES (menuEjecutaAccion) ----
-// ★ CONFIRMACION: COPIADA DEL PATRON QUE YA FUNCIONA EN LA OLED (ver display.cpp:
+// â˜… CONFIRMACION: COPIADA DEL PATRON QUE YA FUNCIONA EN LA OLED (ver display.cpp:
 //   menuIsDestructive() + gConfirmAction/gConfirmUntil + el manejo en menuLong).
-//   En la OLED, la accion que apaga o borra no se ejecuta a la primera: se enseña
+//   En la OLED, la accion que apaga o borra no se ejecuta a la primera: se enseÃ±a
 //   "Pulsa largo: confirmar" y solo una SEGUNDA pulsacion larga dentro de 3 s la hace.
 //   En la tinta NO existia y una pulsacion larga de mas en "Borrado" borraba la
 //   configuracion y reiniciaba sin preguntar (auditoria G2).
@@ -2493,7 +3053,7 @@ static bool seccionTieneInerte(int catAbs) {
 // PANTALLA DE CONFIRMACION ENTERA (ver menuPinta) y se queda fija; si vence la ventana, el
 // aviso desaparece solo en el siguiente refresco.
 //
-// ★ LA VENTANA NO SON 3 S COMO EN LA OLED, SINO 15 (2026-09-15). El motivo es la pantalla,
+// â˜… LA VENTANA NO SON 3 S COMO EN LA OLED, SINO 15 (2026-09-15). El motivo es la pantalla,
 //   no el patron: el aviso tarda ~1,5 s en aparecer (mas ~0,5-1 s hasta que displayRefresh
 //   lo manda), asi que con 3 s al operador le quedaban ~1,5 s para LEER el aviso y volver a
 //   pulsar: una carrera que se pierde. El patron es el mismo (segunda pulsacion CORTA de la
@@ -2501,7 +3061,7 @@ static bool seccionTieneInerte(int catAbs) {
 //   que el auto-cierre del menu, asi que el aviso nunca se queda mas rato que el menu.
 constexpr uint32_t kConfirmMs = 15000;
 
-// ★ DORMIR YA NO PIDE CONFIRMACION (peticion del operador, 2026-09-16).
+// â˜… DORMIR YA NO PIDE CONFIRMACION (peticion del operador, 2026-09-16).
 //   Si el operador elige "Dormir" en el menu, el nodo se duerme y ya: la eleccion de la
 //   fila del menu ES la confirmacion. Motivo: dormir NO es destructivo (no borra nada, no
 //   apaga la radio para siempre y se sale dando al boton), y la pantalla de confirmacion
@@ -2510,24 +3070,36 @@ constexpr uint32_t kConfirmMs = 15000;
 //   del case ACT_SLEEP), asi que si hay cable el operador se entera igual.
 //   Lo que SI sigue pidiendo confirmacion: reiniciar, valores de fabrica, borrado total y
 //   modo grabacion, que es donde una pulsacion de mas cuesta la configuracion.
+//
+// â˜…â˜… Y APAGAR SI PIDE CONFIRMACION (2026-09-22) â˜…â˜…
+//   Aunque el motivo de "Dormir" (no obligar a dos pulsaciones) tambien valdria aqui, hay una
+//   diferencia que manda: **de dormir se sale dando al boton, y de apagado NO** (solo con el
+//   boton de RESET o quitando la alimentacion). Una pulsacion de mas en un menu es barata; que
+//   el nodo se apague sin querer y haya que ir a buscar el boton de reset, no. Ademas, apagar
+//   es lo que se hace justo ANTES de guardarlo, y ahi una confirmacion es lo esperado.
 static bool esAccionDestructiva(int act) {
+  // â˜… ACT_TRK_NUEVO entra aqui porque BORRA el track en vivo (lo que el operador ha grabado
+  //   andando). Es la misma razon que ACT_WIPE, en pequeno.
   return act == ACT_REBOOT || act == ACT_RESET ||
-         act == ACT_WIPE || act == ACT_DFU;
+         act == ACT_WIPE || act == ACT_DFU || act == ACT_TRK_NUEVO;
 }
 
 // Titulo del aviso de confirmacion. nullptr = esa accion no pide confirmacion.
-// (ACT_SLEEP ya no aparece aqui a proposito: ver esAccionDestructiva().)
+// (ACT_SLEEP no aparece aqui a proposito: ver el comentario largo de arriba.
+//  ACT_SHUTDOWN SI, y por un motivo distinto: de apagar no se sale con el boton.)
 static const char *tituloConfirmacion(int act) {
   switch (act) {
+    case ACT_SHUTDOWN: return "APAGAR";
     case ACT_REBOOT: return "REINICIAR";
     case ACT_RESET:  return "VALORES FABRICA";
     case ACT_WIPE:   return "BORRADO TOTAL";
     case ACT_DFU:    return "MODO GRABACION";
+    case ACT_TRK_NUEVO: return "TRACK NUEVO";
     default:         return nullptr;
   }
 }
 
-// ¿Hay una confirmacion pendiente y todavia dentro de la ventana? La comparacion se hace
+// Â¿Hay una confirmacion pendiente y todavia dentro de la ventana? La comparacion se hace
 // en aritmetica SIN SIGNO (como en la OLED), que es inmune al desbordamiento de millis().
 static bool confirmacionPendiente() {
   return gConfirmAction != 0 && (int32_t)(millis() - gConfirmUntil) < 0;
@@ -2536,7 +3108,7 @@ static bool confirmacionPendiente() {
 static void menuEjecutaAccion(int act) {
   if (!gCfg) return;
 
-  // ★ PRIMERA pulsacion CORTA: NO se ejecuta, se PIDE CONFIRMACION.
+  // â˜… PRIMERA pulsacion CORTA: NO se ejecuta, se PIDE CONFIRMACION.
   //   SEGUNDA pulsacion CORTA de la MISMA accion dentro de la ventana: se ejecuta.
   //   (La LARGA, mientras hay confirmacion pendiente, la CANCELA: ver menuLong.)
   //   Cualquier otra accion cancela la peticion pendiente y empieza de cero.
@@ -2557,7 +3129,9 @@ static void menuEjecutaAccion(int act) {
 
   switch (act) {
     case ACT_BEACON:
-      if (tncKissActive() && !tncKissPaused()) { snprintf(gLinea1,sizeof gLinea1,"KISS: manda la app"); }
+      // â˜… CABE EN EL PANEL (2026-09-22): "KISS: manda la app" son 18 caracteres = 214 px, o
+      //   sea 14 px fuera del panel de 200. A escala 2 el tope son 16 caracteres.
+      if (tncKissActive() && !tncKissPaused()) { snprintf(gLinea1,sizeof gLinea1,"KISS activo"); }
       else {
         int16_t st = aprsSendManualBeacon(*gCfg);
         snprintf(gLinea1,sizeof gLinea1, st==RADIOLIB_ERR_NONE ? "Baliza OK" : "Baliza ERR");
@@ -2581,7 +3155,12 @@ static void menuEjecutaAccion(int act) {
     }
     case ACT_BAT: {
       float bv = sensorsBatteryVolt(gSens);
-      snprintf(gLinea1,sizeof gLinea1, "Bat %.2fV INA %.2fV", (double)bv, (double)gSens.inaBusV);
+      // â˜… CABE EN EL PANEL (2026-09-22): "Bat %.2fV INA %.2fV" da 20 caracteres con valores
+      //   reales ("Bat 4.03V INA 4.02V") = 240 px, o sea 40 px FUERA de los 200 del panel.
+      //   Se quitan las "V" (el campo ya se llama asi) y el espacio de "INA":
+      //   "Bat 4.03 INA4.02" son 17 caracteres = 202 px... todavia 2 de mas, asi que los
+      //   voltios van con un decimal: "Bat 4.0 INA4.0" = 16 caracteres exactos = 190 px. Cabe.
+      snprintf(gLinea1,sizeof gLinea1, "Bat %.1f INA%.1f", (double)bv, (double)gSens.inaBusV);
       break;
     }
     case ACT_GPS_INFO: {
@@ -2591,14 +3170,14 @@ static void menuEjecutaAccion(int act) {
       break;
     }
     case ACT_SET_COORDS:
-      // ★ FIJAR COORDS EN LA TINTA (2026-09-15): antes esto solo pintaba "No
+      // â˜… FIJAR COORDS EN LA TINTA (2026-09-15): antes esto solo pintaba "No
       //   soportado en tinta" y no hacia nada. Ahora se lanza LA MISMA sesion que
       //   ya funcionaba en la OLED: la lleva el rastreador (trackerSetCoordsStart,
       //   ver tracker.h), porque es quien gobierna el GPS y quien decide cuando la
       //   posicion esta asentada. Esta pantalla solo da la orden, ensena el
       //   progreso (pintaSesionCoords) y guarda al final (displaySaveCoords).
       //
-      //   ★ AQUI HABIA UNA COMPROBACION PREVIA QUE YA NO HACE FALTA (quitada el
+      //   â˜… AQUI HABIA UNA COMPROBACION PREVIA QUE YA NO HACE FALTA (quitada el
       //   2026-09-15): si el nodo estaba en modo repetidor sin "GPS en repetidor",
       //   se avisaba "activa GPS en repetidor" y NO se arrancaba la captura. Aquel
       //   aviso existia porque la sesion no podia encender el GPS por su cuenta.
@@ -2618,10 +3197,13 @@ static void menuEjecutaAccion(int act) {
     }
     case ACT_SLEEP: {
       if (powerUsbPresent()) {
-        // ★ Con el USB conectado NO se dibuja la pantalla fija de dormido (dejaria el panel
+        // â˜… Con el USB conectado NO se dibuja la pantalla fija de dormido (dejaria el panel
         //   con el zzz pegado y al soltar el cable un estado raro): se avisa con un popup.
         //   Detalle que pidio el operador (2026-09-15).
-        snprintf(gLinea1, sizeof gLinea1, "Solo sin cable USB"); gLinea2[0] = '\0';
+        // â˜… CABE EN EL PANEL (2026-09-22): "Solo sin cable USB" son 18 caracteres = 214 px,
+        //   14 px fuera del panel de 200. Con "Solo sin USB" son 12 = 142 px y dice lo mismo.
+        //   (El popup de abajo si puede ser largo: `displayPopupWait` ya lo parte en dos lineas.)
+        snprintf(gLinea1, sizeof gLinea1, "Solo sin USB"); gLinea2[0] = '\0';
         displayPopupWait("Disponible solo sin cable USB", 3000);   // ~3 s, diseno hermosa
       } else {
         displaySleepScene();   // escena de dormido fija (tinta bistable) y System OFF
@@ -2630,6 +3212,46 @@ static void menuEjecutaAccion(int act) {
       break;
     }
     case ACT_REBOOT: NVIC_SystemReset(); break;
+
+    // â˜…â˜… APAGAR DE VERDAD, a mano (2026-09-22) â˜…â˜…
+    //   NO mira el USB a proposito: es UN SOLO CAMINO con cable y sin cable, igual que el
+    //   firmware de referencia del T-Echo (cfr34k). Asi el nodo no tiene que "decidir" ninguna
+    //   escena, que es justo la duda que preocupaba al operador. Ver `powerShutdownNow()`.
+    //
+    //   Secuencia pensada para que el operador VEA que se apaga, no para que sea instantaneo:
+    //     1. melodia (el mismo tono del aviso de bateria baja: se reconoce sin mirar),
+    //     2. pantalla "APAGADO" con el porque, 4 s, que quede escrita en la tinta,
+    //     3. y solo entonces se corta la corriente.
+    //   El texto se pinta en UNA linea a escala 2 ("APAGADO A MANO" son 14 caracteres, caben):
+    //   si algun dia se alarga, `pintaAviso()` lo parte en dos o lo recorta, nunca se sale.
+    // â˜… EMPEZAR TRACK NUEVO (2026-09-22): tira el track en vivo y empieza uno DESDE
+    //   AQUI. Sin esto no habia forma de empezar de cero, y "Volver a casa" te mandaba
+    //   al punto mas antiguo del anillo (tu casa), no a donde dejaste el nodo.
+    //   Llega hasta aqui SOLO tras la segunda pulsacion corta (es destructiva).
+    //   â˜…â˜… Y VA GUARDADO POR `TRACKS_DISPONIBLE`, QUE ES OBLIGATORIO â˜…â˜…
+    //     La API de tracks (`tracksVivoOlvida`, `tracksGuiaActivo`...) solo EXISTE en el T-Echo
+    //     (ver el `#if` de tracks.h). Sin esta guarda, en las Faketec -- que no tienen ni el
+    //     codigo ni las funciones -- este `case` no compila. Se descubrio al construir el entorno
+    //     de diagnosis `techo_plus_diag_sintracks`, que deja el modulo fuera a proposito.
+#ifdef TRACKS_DISPONIBLE
+    case ACT_TRK_NUEVO: {
+      tracksVivoOlvida();
+      // Y si se estaba guiando, se para: el guiado apuntaba al track viejo, que acaba de
+      // desaparecer. Dejarlo en marcha seria guiar hacia un track que ya no existe.
+      if (tracksGuiaActivo()) tracksGuiaTermina();
+      displayPopupWait("Track nuevo desde aqui", 2500);
+      return;
+    }
+#endif
+    case ACT_SHUTDOWN: {
+      displayLowBatTone();                 // se reutiliza: es el tono de "me voy a apagar"
+      snprintf(gLinea1, sizeof gLinea1, "APAGADO A MANO");
+      gLinea2[0] = '\0';
+      displayPopupWait("APAGADO: vuelve con RESET", 4000);
+      powerShutdownNow(*gCfg);             // no vuelve
+      break;
+    }
+
     // ACT_DFU no tiene fila en kMenu (en esta placa el modo grabacion se pide por USB con
     // "dfu confirm", ver cli.cpp). La rama se deja porque esAccionDestructiva() ya lo
     // contempla y asi la lista de acciones destructivas queda completa, como en la OLED.
@@ -2681,25 +3303,25 @@ static void comenzarEdicion(const MenuItem &it) {
   gDirty = true;
 }
 
-// ★★ EL NUMERO QUE SE VE TIENE QUE SER EL QUE SE ACABA DE GUARDAR (2026-09-15) ★★
+// â˜…â˜… EL NUMERO QUE SE VE TIENE QUE SER EL QUE SE ACABA DE GUARDAR (2026-09-15) â˜…â˜…
 // HALLAZGO al anadir el RESTAR (ver editaResta): `gEditBuf` solo se rellena al ENTRAR en
 // el item (comenzarEdicion) y al girar la rueda de letras (MK_STRING). En los numeros
 // quien guarda es menuSave() directamente en la configuracion, y NADIE volvia a escribir
 // el buffer: la pantalla de edicion (menuPinta, "drawTextCenter(70, gEditBuf, 3)") seguia
-// enseñando el valor de cuando se entro, asi que se podia tocar veinte veces y el numero
+// enseÃ±ando el valor de cuando se entro, asi que se podia tocar veinte veces y el numero
 // grande no se movia aunque la configuracion si cambiaba. Con el sumar eso ya era malo;
 // con el restar es peor: el operador no puede ver a donde va ni comprobar que la
 // correccion a la baja ha entrado.
 // Se rellena desde la MISMA copia que se acaba de guardar (gCfg, a traves de
 // menuValorTexto, que es de donde salia el texto al entrar), asi que pantalla y
 // configuracion no pueden discrepar. Y si menuSave() ha RECHAZADO el valor (fuera de
-// rango para configFromJson), el buffer enseña el que de verdad hay, no el intento.
+// rango para configFromJson), el buffer enseÃ±a el que de verdad hay, no el intento.
 // Solo se llama en los tipos NUMERICOS: el texto tiene su propio buffer (la rueda).
 static void refrescaBufferNumerico(const MenuItem &it) {
   snprintf(gEditBuf, sizeof gEditBuf, "%s", menuValorTexto(it));
 }
 
-// Cambia el valor del item (edición live) y GUARDA.
+// Cambia el valor del item (ediciÃ³n live) y GUARDA.
 static void editaSiguiente(const MenuItem &it) {
   JsonDocument doc;
   configToJson(*gCfg, doc.to<JsonObject>());
@@ -2717,7 +3339,7 @@ static void editaSiguiente(const MenuItem &it) {
       snprintf(buf,sizeof buf,"%ld",nv); menuSave(it.key, buf);
       break;
     }
-    // ★★ TOPE DE RANGO EN LOS FLOAT (2026-09-15, arreglo de la auditoria G4) ★★
+    // â˜…â˜… TOPE DE RANGO EN LOS FLOAT (2026-09-15, arreglo de la auditoria G4) â˜…â˜…
     //   Antes: `float nv = v + step;` a secas. No habia tope por ARRIBA ni por ABAJO, y
     //   ademas menuSave() NO valida rangos (guarda directo en gCfg + storeSave, a
     //   diferencia de cliTypedSet()/configFromJson(), que si validan). Resultado: con
@@ -2780,9 +3402,9 @@ static void editaSiguiente(const MenuItem &it) {
       break;
     }
     case MK_STRING: {
-      // incrementar un carácter: se guarda en gEditBuf (sin persistir hasta confirmar)
+      // incrementar un carÃ¡cter: se guarda en gEditBuf (sin persistir hasta confirmar)
       //
-      // ★★ COMPROBADO AL ARREGLAR G5 (2026-09-15): EL SIGNO MENOS YA ESTABA AQUI ★★
+      // â˜…â˜… COMPROBADO AL ARREGLAR G5 (2026-09-15): EL SIGNO MENOS YA ESTABA AQUI â˜…â˜…
       //   '-' figura en la rueda desde el principio (entre el '9' y el '/'), asi que los
       //   campos de TEXTO ya admitian negativos. Lo que NO admitia negativos era el editor
       //   de NUMEROS: MK_FLOAT no usa esta rueda, usa el atajo de "sumar 0.1" (ver
@@ -2802,13 +3424,13 @@ static void editaSiguiente(const MenuItem &it) {
     }
     case MK_HEADER: case MK_ACTION: break;
   }
-  // ★ (2026-09-15) Que el numero grande de la pantalla de edicion sea el que se acaba de
+  // â˜… (2026-09-15) Que el numero grande de la pantalla de edicion sea el que se acaba de
   //   guardar (ver refrescaBufferNumerico). En el texto NO se toca el buffer: lo construye
   //   la rueda de letras y se persiste al confirmar con el fisico corto.
   if (it.kind == MK_INT || it.kind == MK_FLOAT) refrescaBufferNumerico(it);
 }
 
-// ★★ RESTAR EN LOS AJUSTES NUMERICOS (2026-09-15, peticion del operador) ★★
+// â˜…â˜… RESTAR EN LOS AJUSTES NUMERICOS (2026-09-15, peticion del operador) â˜…â˜…
 //
 // EL PROBLEMA: el editor de numeros solo sumaba. El toque CAPACITIVO llama a
 // menuNavigate() -> editaSiguiente(), y eso siempre suma un paso (+0,1 en los FLOAT),
@@ -2830,7 +3452,7 @@ static void editaSiguiente(const MenuItem &it) {
 // edicion no llega a este codigo, asi que no puede disparar nada de otras pantallas, y
 // 2) NO quita ninguna capacidad, porque salir de la edicion sin guardar sigue estando en
 // el toque LARGO con el mismo efecto (menuLong). Al corto y al largo no se les toca nada.
-//   ★ CONFLICTO CONOCIDO (se dice, no se esconde): el toque corto tarda hasta 800 ms en
+//   â˜… CONFLICTO CONOCIDO (se dice, no se esconde): el toque corto tarda hasta 800 ms en
 //     resolverse (button.cpp: kClickWindowMs espera a ver si el toque es doble). Si el
 //     operador toca una vez para confirmar y, al no ver nada, toca otra vez, eso ES un
 //     doble toque: en vez de confirmar, resta un paso. No se pierde nada (sigue dentro de
@@ -2838,7 +3460,7 @@ static void editaSiguiente(const MenuItem &it) {
 //     menuPinta). ALTERNATIVA si aun asi molesta: dejar el doble toque como cancelar y
 //     poner el RESTAR en el toque LARGO; se descarta porque el largo dejaria de ser
 //     "volver" justo en la pantalla donde mas se usa.
-//   ★ SOLO NUMEROS: en texto y path el doble toque sigue CANCELANDO la edicion (restar
+//   â˜… SOLO NUMEROS: en texto y path el doble toque sigue CANCELANDO la edicion (restar
 //     texto no tiene sentido). Lo decide menuEditCancel(), que es quien filtra.
 //
 // TOPES: los MISMOS it.min/it.max de kMenu que usa el sumar, con su misma regla de rueda:
@@ -2880,30 +3502,675 @@ static void editaResta(const MenuItem &it) {
     }
     default: break;   // texto/path/acciones no se restan (menuEditCancel los filtra antes)
   }
-  // ★ (2026-09-15) Mismo remate que en editaSiguiente: lo que se ve tiene que ser lo que
+  // â˜… (2026-09-15) Mismo remate que en editaSiguiente: lo que se ve tiene que ser lo que
   //   se acaba de guardar, o el operador resta a ciegas (ver refrescaBufferNumerico).
   if (it.kind == MK_INT || it.kind == MK_FLOAT) refrescaBufferNumerico(it);
 }
 
-// ---- NAVEGACIÓN / edit ----
+// ---- NAVEGACIÃ“N / edit ----
 // Modelo de filas (2026-09-15):
 //   MENU PRINCIPAL (gMenuCat<0): filas = [Salir] + secciones[0..mid-1] + [Salir] +
 //     secciones[mid..].  mid = n/2. Con n filas de secciones hay n+2 filas en total.
 //   SUBMENU (gMenuCat>=0): filas = [Volver atras] + [Salir] + items.
 static int menuMainSecCount() { int n=0; for(; kMenuSections[n]; n++) {} return n; }
-// Modelo del MENU PRINCIPAL (2026-09-15): filas =
-//   [0] Salir, [1] Dormir, secciones[0..mid-1], [kSalirMid] Salir, secciones[rest].
-static int kSalirMid(int n)           { return 2 + n/2; }
-static int menuMainTotFilas(int n)    { return n + 3; }
+// â˜…â˜… MODELO DEL MENU PRINCIPAL, con TRES filas virtuales delante (2026-09-22) â˜…â˜…
+//   [0] Salir, [1] Dormir, [2] Apagar, secciones[0..mid-1], [kSalirMid] Salir, secciones[rest].
+//
+//   â˜… OJO AL TOCAR ESTO: `menuMainFilaSeccion()` traduce fila -> seccion, y su aritmetica
+//     depende de CUANTAS filas virtuales hay delante. Antes eran DOS (Salir y Dormir) y valia
+//     `(r < mid) ? (r-2) : (r-3)`. Al anadir "Apagar" pasan a ser TRES, asi que TODOS los
+//     desplazamientos suben uno: `mid`, el total, y los dos tramos de la traduccion. Si alguno
+//     se queda atras, el menu ensena la seccion equivocada o se salta una, y no avisa.
+//   El "Salir" de en medio sigue yendo a `mid`, para que la lista no quede larga sin salida.
+static int kSalirMid(int n)           { return 3 + n/2; }
+static int menuMainTotFilas(int n)    { return n + 4; }
 static bool menuMainFilaSalir(int r, int n) { return r==0 || r==kSalirMid(n); }
 static bool menuMainEsDormir(int r)          { return r==1; }
+static bool menuMainEsApagar(int r)          { return r==2; }
 static int  menuMainFilaSeccion(int r, int n) {
-  if (menuMainFilaSalir(r, n) || menuMainEsDormir(r)) return -1;
+  if (menuMainFilaSalir(r, n) || menuMainEsDormir(r) || menuMainEsApagar(r)) return -1;
   int mid = kSalirMid(n);
-  return (r < mid) ? (r-2) : (r-3);
+  return (r < mid) ? (r-3) : (r-4);
 }
 
+// ===========================================================================
+//  â˜…â˜…â˜… PANTALLAS DE TRACKS (2026-09-22) â˜…â˜…â˜…
+//
+//  Van aparte del menu de ajustes porque no son ajustes: son pantallas de TRABAJO con datos
+//  que cambian (cuantos puntos lleva el track, que ranuras hay cargadas). Pero se pintan con
+//  **el mismo estilo exacto** que el resto del menu, que es lo que pidio el operador:
+//    - titulo a escala 1 arriba,
+//    - fila 0 "< Volver" y fila 1 "Salir",
+//    - filas a escala 2, con recuadro en la seleccionada,
+//    - y el auto-cierre de los 15 s, igual que el menu.
+//
+//  EL ESTADO ES PROPIO Y PEQUENO (`gTrkPant` + `gTrkFila`), para no mezclarlo con el del menu
+//  de ajustes. Se entra desde la seccion Tracks del menu (ver `menuShort`).
+// ===========================================================================
+#ifdef TRACKS_DISPONIBLE
+enum TrkPant : uint8_t {
+  TRK_PANT_NADA = 0,      // las pantallas de tracks NO estan abiertas
+  TRK_PANT_LISTA,         // lista: track en vivo, las 5 ranuras, volver a casa
+  TRK_PANT_ACCION,        // tras elegir un track: hacia adelante / atras / finalizar
+  TRK_PANT_GUIA,          // â˜… PANTALLA DE GUIADO: brujula + linea del track + datos
+};
+TrkPant gTrkPant = TRK_PANT_NADA;
+int     gTrkFila = 0;       // fila resaltada
+int     gTrkElegido = -1;   // que se ha elegido: -1 = vivo, 0..4 = ranura
+uint32_t gTrkUltActMs = 0;
+// â˜… Vista de la pantalla de guiado: false = VENTANA DE CERCA (1,5 km, la de navegar), true =
+//   track COMPLETO (la de mirar la ruta entera). Una pulsacion corta cambia de una a otra, como
+//   pidio el operador. Se queda en false por defecto: al empezar a guiar lo que se quiere es
+//   navegar, no ver el plano general.
+bool    gTrkZoomCompleto = false;
+
+// Filas de la pantalla de lista: 0=Volver, 1=Salir, 2=vivo, 3=EMPEZAR NUEVO, 4..8=ranuras,
+// 9=volver a casa
+constexpr int kTrkFilaVivo    = 2;
+constexpr int kTrkFilaNuevo   = 3;
+constexpr int kTrkFilaSlot0   = 4;
+constexpr int kTrkFilaCasa    = 9;
+constexpr int kTrkFilasLista  = 10;
+// Pantalla de accion: 0=Volver, 1=Salir, 2=adelante, 3=atras, 4=finalizar
+constexpr int kTrkFilasAccion = 5;
+
+// Â¿Estan abiertas las pantallas de tracks? Lo mira `menuPinta` y lo mira `displayRefresh`.
+bool pantallaTracksActiva() { return gTrkPant != TRK_PANT_NADA; }
+
+void pantallaTracksAbre(TrkPant cual, int fila) {
+  gTrkPant = cual;
+  gTrkFila = fila;
+  gTrkUltActMs = millis();
+  gMenuOn = false;          // las pantallas de tracks sustituyen al menu de ajustes
+  gMenuCat = -1;
+  gDirty = true;
+}
+
+void pantallaTracksCierra() {
+  gTrkPant = TRK_PANT_NADA;
+  gTrkElegido = -1;
+  gDirty = true;
+}
+
+// ---------------------------------------------------------------------------------------
+//  PINTADO de las pantallas de tracks. Mismo estilo que el menu: titulo pequeno arriba,
+//  fila 0 "< Volver", fila 1 "Salir", filas a escala 2 con recuadro en la seleccionada.
+// ---------------------------------------------------------------------------------------
+namespace {
+
+void filaTrk(int r, int y, const char *texto, bool sel) {
+  // â˜…â˜… ESCALA 0: LA FUENTE DIN 10 (2026-09-22) â˜…â˜…
+  //   Es el tercer tamano: la misma altura de letra que la escala 2 (14 px) pero de ancho
+  //   variable. Las filas de este menu llevan textos largos ("Finalizar guiado", 16 caracteres)
+  //   que a escala 2 NO caben (190 px sobre 187 utiles) y con esta fuente caben de sobra (129).
+  //   â˜… Y LAS FILAS SUBEN DE 18 A 20 px: la DIN 10 llega mas abajo que los 14 px de la escala 2
+  //     (las letras con rabo como la 'g' bajan 9 px por debajo de la linea base), asi que con 18
+  //     px de salto se tocarian las lineas.
+  const int esc2 = 0;
+  const int rowH2 = 20;
+  if (sel) {
+    barraH(6, EPD_W - 6, y - 1, 1);
+    barraH(6, EPD_W - 6, y + rowH2 - 2, 1);
+    barraV(6, y - 1, y + rowH2 - 2, 1);
+    barraV(EPD_W - 6, y - 1, y + rowH2 - 2, 1);
+  }
+  drawText(14, y, texto, esc2);
+}
+
+// Nombre corto de una ranura: â˜… NUMERO + FECHA Y HORA (2026-09-22).
+//   Las vacias ya llevaban el numero ("1  Vacia"), pero las LLENAS no, y ahi es donde hace
+//   falta: con las cinco ranuras cargadas el mismo dia, seis filas con "12/07 18:42" no se
+//   distinguen entre si. El numero las separa sin teclear nada (el operador descarto los nombres
+//   a proposito: bautizar rutas en una pantalla de tinta con un boton es un suplicio).
+//   El ano NO se pone: a escala 2 no cabe y no ayuda a elegir una ruta recien cargada.
+const char *nombreRanura(uint8_t slot, char *b, size_t n) {
+  TrackRanuraInfo inf;
+  tracksRanuraInfo(slot, &inf);
+  if (!inf.valida) { snprintf(b, n, "%d  Vacia", (int)slot + 1); return b; }
+  // "4  12/07 18:42" = 14 caracteres a escala 2: cabe (el tope son 16).
+  snprintf(b, n, "%d  %02u/%02u %02u:%02u", (int)slot + 1, (unsigned)inf.day,
+           (unsigned)inf.month, (unsigned)inf.hour, (unsigned)inf.minute);
+  return b;
+}
+
+void pantallaTracksPinta() {
+  // ★★ EL SALTO DE FILA, EN UN SOLO SITIO (2026-09-22) ★★
+  //   `filaTrk` dibuja el recuadro de 20 px de alto, pero el bucle que coloca las filas avanzaba
+  //   de 18 en 18. El recuadro de una fila se metia 2 px en la siguiente, y el desfase se acumula
+  //   hacia abajo: en las ultimas filas (donde esta "Volver a casa") el recuadro quedaba
+  //   descuadrado respecto a su texto. Lo vio el operador.
+  //   ★ AHORA HAY UNA SOLA CONSTANTE, y la usan el recuadro y el bucle: no pueden discrepar.
+  static constexpr int rowH2 = 20;
+  static constexpr int y0 = 30;
+  if (gTrkPant == TRK_PANT_LISTA) {
+    // â˜… El titulo es CORTO a proposito, como el de los demas submenus ("PERFILES", "MENU"): la
+    //   coherencia de estilo la pidio el operador. El aviso de que la lista se desplaza NO va
+    //   aqui (un titulo largo rompia el estilo): va en la fila del track EN VIVO, que es donde
+    //   se ve que hay mas abajo.
+    drawTextCenter(12, "TRACKS", 0);   // escala 0: la fuente DIN 10 (ver epd_font_din10.h)
+    const int total = kTrkFilasLista;
+    // â˜… 7 FILAS Y NO 8 (2026-09-22): al subir el salto de 18 a 20 px por la fuente DIN, la
+    //   octava fila empezaba en y=170 y su texto (23 px de caja) llegaba a 193: se metia debajo
+    //   del pie de la pantalla. Con 7 filas la ultima acaba en 176 y queda sitio de sobra.
+    const int visibles = 7;
+    int top = gTrkFila - (visibles / 2);
+    if (top < 0) top = 0;
+    if (top > total - visibles) top = (total - visibles < 0) ? 0 : total - visibles;
+    int y = y0;
+    for (int r = top; r < total && y < 186; r++, y += rowH2) {
+      const bool sel = (r == gTrkFila);
+      if (r == 0) { filaTrk(r, y, "< Volver", sel); continue; }
+      if (r == 1) { filaTrk(r, y, "Salir", sel); continue; }
+      if (r == kTrkFilaVivo) {
+        // Solo FECHA Y HORA, como pidio el operador. Los puntos NO se pueden anadir en esta
+        // fila: "Vivo 12/07 18:42 1240pt" son 23 caracteres y a escala 2 el tope son 16 (200 px),
+        // o sea 274 px: SE SALIA DEL PANEL. Los puntos se ven al entrar (y en el configurador).
+        char b[26];
+        uint16_t yy = 0; uint8_t mo = 0, dd = 0, hh = 0, mm = 0;
+        if (tracksVivoCuando(&yy, &mo, &dd, &hh, &mm)) {
+          snprintf(b, sizeof b, "%02u/%02u %02u:%02u", (unsigned)dd, (unsigned)mo,
+                   (unsigned)hh, (unsigned)mm);
+        } else {
+          // â˜… "Sin hora GPS" y no "sin hora": ver la nota de la otra copia de este texto. Sin
+          //   decir de donde tendria que venir la hora, parece un fallo del aparato.
+          snprintf(b, sizeof b, "Sin hora GPS");
+        }
+        // â˜… Y SI NO SE ESTA GRABANDO, SE DICE AQUI (2026-09-22). Este es el sitio del aviso, no
+        //   la cabecera: aqui es donde el operador mira cuando quiere saber que esta pasando.
+        //   â˜… SE SUSTITUYE LA FECHA, NO SE AÃ‘ADE: "12/07 18:42 NO GRABA" son 20 caracteres y a
+        //     escala 2 el tope son 15. Cuando no se graba, lo que hay que saber es ESO; la fecha
+        //     de cuando empezo es secundaria.
+        if (tracksVivoActivo() && !tracksVivoGrabando()) {
+          snprintf(b, sizeof b, "NO GRABA");
+        }
+        filaTrk(r, y, b, sel);
+        continue;
+      }
+      if (r == kTrkFilaNuevo) {
+        // â˜…â˜… "EMPEZAR NUEVO" (2026-09-22): sin esta fila, el track en vivo NO SE PODIA EMPEZAR NI
+        //   BORRAR DESDE NINGUN SITIO. El nodo grababa desde que cogia posicion y, al arrancar,
+        //   "rescataba" el track anterior: seguia grabando el mismo para siempre.
+        //   Consecuencia real: llegabas al monte y "Volver a casa" te mandaba... a tu casa (el
+        //   punto mas antiguo del anillo), no al coche donde dejaste el nodo.
+        //   Ahora: pulsando aqui se tira el track en vivo y se empieza uno nuevo DESDE DONDE
+        //   ESTAS, que es lo que se espera al empezar una ruta. Lo cazo una revision
+        //   independiente de experiencia de uso.
+        filaTrk(r, y, "Empezar nuevo", sel);
+        continue;
+      }
+      if (r >= kTrkFilaSlot0 && r < kTrkFilaSlot0 + (int)TRACK_SLOTS) {
+        char b[24];
+        filaTrk(r, y, nombreRanura((uint8_t)(r - kTrkFilaSlot0), b, sizeof b), sel);
+        continue;
+      }
+      if (r == kTrkFilaCasa) { filaTrk(r, y, "Volver a casa", sel); continue; }
+    }
+    return;
+  }
+
+  if (gTrkPant == TRK_PANT_ACCION) {
+    drawTextCenter(12, "GUIAR", 0);    // escala 0: la fuente DIN 10    // â˜… Se dice QUE track se ha elegido: sin esto, con cinco ranuras iguales en pantalla el
+    //   operador no sabe cual esta a punto de seguir.
+    char tit[24];
+    if (gTrkElegido < 0) {
+      snprintf(tit, sizeof tit, "Track en vivo");
+    } else {
+      TrackRanuraInfo inf;
+      tracksRanuraInfo((uint8_t)gTrkElegido, &inf);
+      snprintf(tit, sizeof tit, "%02u/%02u %02u:%02u", (unsigned)inf.day, (unsigned)inf.month,
+               (unsigned)inf.hour, (unsigned)inf.minute);
+    }
+    drawTextCenter(26, tit, 1);
+
+    int y = y0 + 14;
+    for (int r = 0; r < kTrkFilasAccion && y < 186; r++, y += rowH2) {
+      const bool sel = (r == gTrkFila);
+      if (r == 0) { filaTrk(r, y, "< Volver", sel); continue; }
+      if (r == 1) { filaTrk(r, y, "Salir", sel); continue; }
+      if (r == 2) { filaTrk(r, y, "Hacia adelante", sel); continue; }
+      if (r == 3) { filaTrk(r, y, "Hacia atras", sel); continue; }
+      if (r == 4) { filaTrk(r, y, "Finalizar guiado", sel); continue; }
+    }
+    return;
+  }
+
+  // =====================================================================================
+  //  â˜…â˜…â˜… LA PANTALLA DE GUIADO (2026-09-22) â˜…â˜…â˜…
+  //
+  //  Reparto del panel de 200x200:
+  //     y=0..11    titulo (el sentido: "ADELANTE" / "ATRAS") y el rumbo del GPS
+  //     y=14..92   ZONA DE DIBUJO (206x78 utiles): la LINEA del track + la FLECHA encima
+  //     y=96..104  separador
+  //     y=108..144 desviacion / lo que falta / altitud + coordenadas
+  //     y=186      pie (bateria), como en las demas escenas
+  //
+  //  â˜… LA FLECHA VA EN UNA ESQUINA, ENCIMA DE LA LINEA. No se puede dibujar una rosa de los
+  //    vientos girando en este panel, y ademas la flecha es lo que se mira de un vistazo: se
+  //    pinta en la esquina superior izquierda (44x44) para no tapar la linea del track.
+  // =====================================================================================
+  if (gTrkPant == TRK_PANT_GUIA) {
+    TrackGuia g;
+    tracksGuiaEstado(&g);
+    const bool sinFix = !gpsGet().fix;
+    const float vel = gpsGet().speedKmh;
+
+    // ---- linea 1: el sentido del guiado, y el rumbo del GPS si lo hay ----
+    {
+      char b[24];
+      if (sinFix) snprintf(b, sizeof b, "%s  SIN GPS", g.alReves ? "ATRAS" : "ADELANTE");
+      else if (vel < kGuiaAndandoKmh) snprintf(b, sizeof b, "%s  PARADO", g.alReves ? "ATRAS" : "ADELANTE");
+      else snprintf(b, sizeof b, "%s  rumbo %03d", g.alReves ? "ATRAS" : "ADELANTE",
+                    (int)(gpsGet().courseDeg + 0.5f) % 360);
+      drawTextCenter(2, b, 1);
+    }
+
+    // ---- la zona de dibujo ----
+    constexpr int DIB_X0 = 6, DIB_X1 = EPD_W - 7;
+    constexpr int DIB_Y0 = 16, DIB_Y1 = 92;
+    constexpr float kGuiaVentanaM = 1500.0f;   // â˜… el radio de la VENTANA DE CERCA
+
+    if (tracksGuiaDibujable()) {
+      // ---- 1) limites de lo que se va a dibujar ----
+      //   De cerca: la ventana alrededor de ti. Lo lejos: TODO el track.
+      //   El eje "a lo largo" se mide con la distancia ACUMULADA y el "a lo ancho" con la
+      //   desviacion, los dos ya calculados por el motor: asi no hay que proyectar nada aqui.
+      double latMin = 90.0, latMax = -90.0, lonMin = 180.0, lonMax = -180.0;
+      uint32_t desde = 0, hasta = 0;
+      if (!gTrkZoomCompleto) {
+        // Desde un poco antes de tu punto hasta la ventana por delante.
+        desde = (g.idxCerca > 20) ? (g.idxCerca - 20) : 0;
+        // Hasta: se avanza hasta juntar la ventana. Se limita el numero de puntos leidos para
+        // que un track enorme no bloquee el refresco.
+        double acum = 0.0;
+        TrackPunto p0, p1;
+        hasta = desde;
+        if (tracksGuiaLee(desde, &p0)) {
+          for (uint32_t i = desde; i + 1 < tracksGuiaPuntos() && acum < kGuiaVentanaM; i++) {
+            if (!tracksGuiaLee(i + 1, &p1)) break;
+            acum += gpsDistanceM((double)p0.lat1e7 / 1e7, (double)p0.lon1e7 / 1e7,
+                                 (double)p1.lat1e7 / 1e7, (double)p1.lon1e7 / 1e7);
+            p0 = p1;
+            hasta = i + 1;
+          }
+        }
+      } else {
+        desde = 0;
+        hasta = tracksGuiaPuntos() - 1;
+      }
+
+      for (uint32_t i = desde; i <= hasta; i++) {
+        TrackPunto p;
+        if (!tracksGuiaLee(i, &p)) continue;
+        const double la = (double)p.lat1e7 / 1e7, lo = (double)p.lon1e7 / 1e7;
+        if (la < latMin) latMin = la;
+        if (la > latMax) latMax = la;
+        if (lo < lonMin) lonMin = lo;
+        if (lo > lonMax) lonMax = lo;
+      }
+      // Y tu posicion entra en los limites SIEMPRE: si no, la marca de posicion se saldria.
+      {
+        const double la = gpsGet().lat, lo = gpsGet().lon;
+        if (sinFix) { /* sin fix no se dibuja la marca, pero los limites son del track */ }
+        else {
+          if (la < latMin) latMin = la;
+          if (la > latMax) latMax = la;
+          if (lo < lonMin) lonMin = lo;
+          if (lo > lonMax) lonMax = lo;
+        }
+      }
+
+      // ---- 2) la escala: TIENE QUE ENTRAR EN ANCHO **Y** EN ALTO ----
+      // â˜…â˜… AQUI HABIA UN FALLO DE BULTO (2026-09-22; lo cazo una revision independiente) â˜…â˜…
+      //   La escala se sacaba SOLO del ancho (`200.0 / anchoM`) y el alto se calculaba... para
+      //   nada: `altoM` no se usaba en ninguna parte. Resultado: una ruta que se extiende en
+      //   vertical (cualquier ruta de montana de un dia) NO cabia, y como `aPantalla` recorta
+      //   cada punto al borde, la linea se convertia en dos rayas pegadas a los cantos. El
+      //   usuario no podia saber por donde iba la ruta ni si el estaba dentro.
+      //   Con la zona de dibujo de 187x77 px, el ALTO es lo que manda casi siempre.
+      //   AHORA: metros por pixel = el MAYOR de los dos (ancho/anchoDib, alto/altoDib), que es lo
+      //   que garantiza que quepa en las dos direcciones.
+      const double cosLat = cos(((latMin + latMax) / 2.0) * M_PI / 180.0);
+      const double anchoM = (lonMax - lonMin) * 111320.0 * cosLat;
+      const double altoM  = (latMax - latMin) * 110540.0;
+      const double dibAncho = (double)(DIB_X1 - DIB_X0);
+      const double dibAlto  = (double)(DIB_Y1 - DIB_Y0);
+      double esc = 1.0;
+      if (dibAncho > 1.0 && dibAlto > 1.0) {
+        const double escX = anchoM / dibAncho;
+        const double escY = altoM / dibAlto;
+        esc = (escX > escY) ? escX : escY;     // â˜… el que mas aprieta: cabe en las dos
+      }
+      // â˜… SOLO se dice "no se puede dibujar" cuando de verdad no aporta nada: si sale mas de
+      //   2 km por pixel, la linea no dice nada. (Antes se avisaba a partir de 200 km, que con
+      //   el alto ya no hace falta tan pronto.)
+      const bool escalaRid = (esc > 2000.0);
+      if (escalaRid) esc = 1.0;
+
+      auto aPantalla = [&](double la, double lo, int *px_, int *py_) {
+        const double xm = (lo - (lonMin + lonMax) / 2.0) * 111320.0 * cosLat;
+        const double ym = (la - (latMin + latMax) / 2.0) * 110540.0;
+        int x = (int)((xm / esc) + (DIB_X0 + DIB_X1) / 2);
+        int y = (DIB_Y1 + DIB_Y0) / 2 - (int)(ym / esc);
+        if (x < DIB_X0) x = DIB_X0;
+        if (x > DIB_X1) x = DIB_X1;
+        if (y < DIB_Y0) y = DIB_Y0;
+        if (y > DIB_Y1) y = DIB_Y1;
+        *px_ = x; *py_ = y;
+      };
+
+      // ---- 3) la LINEA: continua lo ya recorrido, a guiones lo que queda ----
+      int xa = 0, ya = 0, xb = 0, yb = 0;
+      bool hayA = false;
+      for (uint32_t i = desde; i <= hasta && i + 1 <= tracksGuiaPuntos() - 1; i++) {
+        TrackPunto p;
+        if (!tracksGuiaLee(i, &p)) break;
+        aPantalla((double)p.lat1e7 / 1e7, (double)p.lon1e7 / 1e7, &xb, &yb);
+        if (hayA) {
+          // â˜… El corte entre "hecho" y "queda" es tu punto mas cercano: lo de atras va continuo
+          //   (ya lo has andado) y lo de delante a guiones (te queda por andar). En blanco y
+          //   negro, sin colores, ese es el recurso que hay para distinguirlos.
+          const bool queda = (i >= g.idxCerca);
+          trazaLinea(xa, ya, xb, yb, queda ? 3 : 0);
+        }
+        xa = xb; ya = yb; hayA = true;
+      }
+
+      // ---- 4) la marca de TU posicion (una cruz) ----
+      if (!sinFix) {
+        int mx, my;
+        aPantalla(gpsGet().lat, gpsGet().lon, &mx, &my);
+        for (int d = -3; d <= 3; d++) { px(mx + d, my, true); px(mx, my + d, true); }
+      }
+    } else {
+      // â˜…â˜… ESTAS DOS LINEAS SUBEN A y=22 (2026-09-22) â˜…â˜…
+      //   Estaban en DIB_Y0+30 (y=46) y DIB_Y0+42 (y=58)... y el AVISO DE LA FLECHA se pinta en
+      //   y=46 TAMBIEN, pero FUERA de este if/else (o sea, aunque no haya track que dibujar).
+      //   O sea que SI pueden coincidir: un track demasiado largo para dibujar y el GPS parado
+      //   sacaban las dos cosas encima. Lo caza el comprobador de disposicion de textos, que para
+      //   eso esta: a ojo no se ve, porque cada rama por separado parece bien.
+      //   Subirlas a y=22 las saca de la fila del aviso (que va en y=46) sin salirse de la zona.
+      drawTextCenter(DIB_Y0 + 6, "Track demasiado", 1);
+      drawTextCenter(DIB_Y0 + 18, "largo para dibujar", 1);
+    }
+
+    // ---- 4b) EL AVISO DE QUE NO SE ESTA GRABANDO (2026-09-22) ----
+    //   El guiado PAUSA la grabacion del track en vivo (punto 7 de la especificacion), y eso hay
+    //   que DECIRLO en la pantalla, no solo apuntarlo en el registro de viaje (que se lee por
+    //   USB). El caso peor no es curiosear el menu: es acabar la ruta y olvidarse de "Finalizar
+    //   guiado", y quedarse sin grabar el resto de la caminata.
+    //   â˜…â˜… ESTE AVISO YA NO SE PINTA AQUI (2026-09-22) â˜…â˜…
+    //     Se pinta en `pintaCabecera()`, que sale en TODAS las pantallas. Aqui solo estaba en
+    //     esta, y al salir a la lista (o al carrusel) el usuario se quedaba sin saber que su
+    //     track habia dejado de grabarse. Ver la explicacion larga en `pintaCabecera`.
+    
+    // ---- 5) LA FLECHA, en la esquina ----
+    //   â˜…â˜… LAS CINCO REGLAS â˜…â˜…
+    //     - sin fix                -> no se pinta flecha (no hay posicion)
+    //     - parado (<1 km/h)       -> "ANDA UNOS PASOS": el rumbo del GPS vale 0 parado y una
+    //                                 flecha al norte con toda su confianza manda al sitio
+    //                                 contrario
+    //     - desviacion > 500 m     -> â˜… SE SIGUE PINTANDO FLECHA, pero de VUELTA a la ruta (ver
+    //                                 abajo: esto se corrigio el 2026-09-22)
+    //     - a menos de 25 m del final -> "LLEGADA"
+    //     - si no, flecha = rumbo de la ruta - rumbo de marcha
+    //
+    //   â˜…â˜… EL FALLO QUE SE CORRIGIO AQUI (lo cazo una revision independiente) â˜…â˜…
+    //     Antes, con mas de 500 m de desviacion, se ponia "MUY LEJOS" y **se dejaba de pintar
+    //     flecha**. Y la linea de datos ponia "DESV MUY LEJOS" en vez de los metros, aunque el
+    //     motor SI tenia el numero. O sea: en el unico momento en que de verdad hace falta saber
+    //     hacia donde tirar (te has desviado, hay niebla, se cierra la senda), el aparato se
+    //     quedaba mudo. Es justo lo contrario de lo que se busca.
+    //     AHORA: se pinta la flecha HACIA LA RUTA (no "MUY LEJOS" y a buscarte la vida), y los
+    //     metros de desviacion se siguen diciendo.
+    {
+      const int cxf = 28, cyf = 42;   // centro de la flecha
+      const char *aviso = nullptr;
+      bool flechaDeVuelta = false;    // true = apuntar al punto de la ruta mas cercano
+      if (sinFix) aviso = "SIN GPS";
+      else if (vel < kGuiaAndandoKmh) aviso = "ANDA UNOS PASOS";
+      else if (g.faltanM < kGuiaCercaM) aviso = "LLEGADA";
+      else if (g.desviacionM > kGuiaMuyLejosM) flechaDeVuelta = true;
+
+      if (aviso) {
+        // Sin flecha: se dice por que. Es mejor no pintar nada que pintar una flecha falsa.
+        drawText(8, DIB_Y0 + 30, aviso, 1);
+      } else {
+        // A donde apuntar: al trozo de ruta que viene, o DE VUELTA a la ruta si te has ido
+        // lejos. El rumbo se mide desde tu posicion real al punto elegido.
+        float rumboObjetivo = g.rumboRutaDeg;
+        if (flechaDeVuelta) {
+          TrackPunto p;
+          if (tracksGuiaLee(g.idxCerca, &p)) {
+            rumboObjetivo = gpsBearingDeg(gpsGet().lat, gpsGet().lon,
+                                          (double)p.lat1e7 / 1e7, (double)p.lon1e7 / 1e7);
+          }
+        }
+        // Flecha de 8 puntas: se elige la mas parecida a la diferencia y se pinta con barras,
+        // que es lo unico que hay para dibujar en este panel sin meter una tabla mas.
+        float dif = rumboObjetivo - gpsGet().courseDeg;
+        while (dif < 0) dif += 360.0f;
+        while (dif >= 360.0f) dif -= 360.0f;
+        const int oct = (int)((dif + 22.5f) / 45.0f) % 8;
+        // 0=norte(arriba) y en sentido horario
+        static const int8_t dx8[8] = { 0,  1,  1,  1,  0, -1, -1, -1};
+        static const int8_t dy8[8] = {-1, -1,  0,  1,  1,  1,  0, -1};
+        const int largo = 16;
+        const int fx = cxf + dx8[oct] * largo, fy = cyf + dy8[oct] * largo;
+        trazaLinea(cxf, cyf, fx, fy, 0);
+        // La punta: dos trazos cortos en diagonal, que es lo unico que hace falta para que la
+        // raya se lea como una flecha y no como un palo.
+        trazaLinea(fx, fy, fx - dx8[oct] * 6 + dy8[oct] * 5, fy - dy8[oct] * 6 - dx8[oct] * 5, 0);
+        trazaLinea(fx, fy, fx - dx8[oct] * 6 - dy8[oct] * 5, fy - dy8[oct] * 6 + dx8[oct] * 5, 0);
+      }
+    }
+
+    // ---- 5b) AVISO: EL PRINCIPIO DEL ANILLO YA SE PERDIO (2026-09-22) ----
+    //   "Volver a casa" guia hacia el PRINCIPIO del track en vivo. Si el anillo ha dado la
+    //   vuelta, ese principio ya no es donde empezaste: es un punto cualquiera del recorrido. El
+    //   motor lo sabe, y callarlo seria guiar con toda la confianza hacia el sitio equivocado.
+    //   Se avisa SOLO en el caso que importa: yendo HACIA ATRAS con el track EN VIVO.
+    //   â˜… Y tras un reinicio no se puede saber (`gVivoVueltas` se pone a 0 a proposito), asi que
+    //     este aviso no promete nada que no pueda cumplir.
+    if (g.alReves && g.fuente == TRK_FUENTE_VIVO && tracksVivoDioLaVuelta()) {
+      drawText(8, DIB_Y1 - 10, "Inicio perdido", 1);
+    }
+    
+    // ---- 6) separador y datos ----
+    hLine(6, EPD_W - 7, 96, 1);
+    {
+      // â˜…â˜… LA DISPOSICION DE ESTA FRANJA, EN UN SOLO SITIO (2026-09-22) â˜…â˜…
+      //   Estas constantes son las filas de los cuatro datos, y se declaran ANTES de usarlas para
+      //   que la disposicion se lea de un vistazo. Antes habia una fila escrita a mano en un sitio
+      //   y otra en otro, y asi fue como se colaron los solapes.
+      //     DESV   102..115   (escala 2 = 14 px de alto)
+      //     FALTAN 118..131   (escala 2)   -> 18 px de salto: no se tocan
+      //     ALT    136..142   (escala 1 = 7 px)
+      //     coords 150..156   (escala 1)
+      static constexpr int kFilaDesv   = 102;
+      static constexpr int kFilaFaltan = 118;
+      static constexpr int kFilaAlt    = 136;
+      static constexpr int kFilaCoord  = 150;
+      // â˜… `gp` VA AQUI ARRIBA: las coordenadas se pintan mas abajo y lo usan. La primera version
+      //   lo declaro dentro de un bloque interior y el compilador lo caza
+      //   ('gp' was not declared in this scope) -- despiste que conviene dejar anotado.
+      const GpsData &gp = gpsGet();
+      char b[32];
+
+      // La desviacion: es EL numero que se mira al seguir un track, y se dice SIEMPRE, tambien
+      // cuando es grande. â˜… Antes, con mas de 500 m ponia "MUY LEJOS" en vez de los metros: justo
+      //   cuando el numero es mas util (para saber si te acercas a la ruta o te alejas) se lo
+      //   quitaba al usuario. Corregido el 2026-09-22.
+      if (g.desviacionM >= 1000.0f) snprintf(b, sizeof b, "DESV   %.1f km", (double)(g.desviacionM / 1000.0f));
+      else snprintf(b, sizeof b, "DESV   %d m", (int)(g.desviacionM + 0.5f));
+      drawText(8, kFilaDesv, b, 2);
+
+      // â˜…â˜… "FALTAN" ES LONGITUD DE RUTA, Y ESO SE DICE CON EL PUNTO DEL DECIMAL (2026-09-22) â˜…â˜…
+      //   El numero es lo que queda POR LA RUTA, no la distancia en linea recta al final. Es el
+      //   dato correcto para seguir un track, pero quien lo lee como "cuanto me queda para llegar"
+      //   se desconcierta si la ruta da una vuelta a un barranco (4,2 km de ruta con el final a
+      //   1,5 km en recta).
+      //   Se intento rotularlo con "(ruta)" y NO CABE en ningun sitio:
+      //     - debajo: se imprimia ENCIMA de "ALT" (lo cazo una revision independiente midiendo las
+      //       filas: entre las dos lineas solo quedaban 6 px y una linea de texto necesita 7);
+      //     - a la derecha: el numero a escala 2 llega a 14 caracteres ("FALTAN 99.99 km" son 178
+      //       px desde x=8), asi que no queda hueco para nada detras sin pisarlo (lo dijo el
+      //       comprobador de disposicion, que para eso esta).
+      //   LA SOLUCION NO OCUPA NADA: en kilometros SE PONE EL DECIMAL (dos cifras) y en metros no.
+      //   Ese punto ya dice que es una distancia medida y no una cuenta redondeada, que es el
+      //   convenio de cualquier aparato de estos. Cero caracteres de mas.
+      {
+        char bf[24];
+        if (g.faltanM >= 1000.0f) snprintf(bf, sizeof bf, "FALTAN %.2f km", (double)(g.faltanM / 1000.0f));
+        else snprintf(bf, sizeof bf, "FALTAN %d m", (int)(g.faltanM + 0.5f));
+        drawText(8, kFilaFaltan, bf, 2);
+      }
+
+      if (gp.altValid) snprintf(b, sizeof b, "ALT %d m", (int)(gp.altM + 0.5f));
+      else snprintf(b, sizeof b, "ALT --");
+      drawText(8, kFilaAlt, b, 1);
+      snprintf(b, sizeof b, "%.5f %.5f", gp.lat, gp.lon);
+      drawText(8, kFilaCoord, b, 1);
+    }
+    return;
+  }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------------------
+//  NAVEGACION de las pantallas de tracks. Se llama desde `menuNavigate`, `menuShort` y
+//  `menuLong` cuando `pantallaTracksActiva()`: asi el boton se comporta igual que en el menu.
+// ---------------------------------------------------------------------------------------
+void pantallaTracksNavega() {
+  gTrkUltActMs = millis();
+  const int total = (gTrkPant == TRK_PANT_LISTA) ? kTrkFilasLista : kTrkFilasAccion;
+  gTrkFila = (gTrkFila + 1) % total;      // wrap, como en el resto del menu
+  gDirty = true;
+}
+
+void pantallaTracksCorto() {
+  gTrkUltActMs = millis();
+  if (gTrkPant == TRK_PANT_LISTA) {
+    if (gTrkFila == 0) { pantallaTracksCierra(); return; }     // "< Volver"
+    if (gTrkFila == 1) { pantallaTracksCierra(); menuClose(); return; }   // "Salir"
+    if (gTrkFila == kTrkFilaCasa) {
+      // â˜…â˜… "VOLVER A CASA" LLEVA A CASA DE VERDAD (2026-09-22) â˜…â˜…
+      //   Antes abria la LISTA de tracks en la fila de esta misma opcion, o sea el MISMO menu
+      //   otra vez: el rotulo prometia un atajo y entregaba una lista. Lo cazo una revision de
+      //   uso independiente.
+      //   AHORA arranca el guiado HACIA ATRAS sobre el track en vivo, que es lo que el usuario
+      //   espera al pulsar eso. Si no hay track, se dice por que (como antes).
+      if (!tracksVivoActivo() || tracksVivoPuntos() < 2) {
+        snprintf(gLinea1, sizeof gLinea1, "Sin track vivo");
+        gLinea2[0] = '\0';
+        displayPopupWait("Todavia no hay track grabado", 3000);
+        return;
+      }
+      if (!tracksGuiaEmpieza(TRK_FUENTE_VIVO, -1, true)) {
+        displayPopupWait("Ese track no tiene puntos suficientes", 3000);
+        return;
+      }
+      gTrkZoomCompleto = false;
+      pantallaTracksAbre(TRK_PANT_GUIA, 0);
+      return;
+    }
+    // Filas de track: el vivo (fila 2) o una ranura.
+    if (gTrkFila == kTrkFilaVivo) {
+      if (!tracksVivoActivo() || tracksVivoPuntos() < 2) {
+        displayPopupWait("Todavia no hay track grabado", 3000);
+        return;
+      }
+      gTrkElegido = -1;
+      pantallaTracksAbre(TRK_PANT_ACCION, 2);
+      return;
+    }
+    if (gTrkFila >= kTrkFilaSlot0 && gTrkFila < kTrkFilaSlot0 + (int)TRACK_SLOTS) {
+      const uint8_t slot = (uint8_t)(gTrkFila - kTrkFilaSlot0);
+      TrackRanuraInfo inf;
+      tracksRanuraInfo(slot, &inf);
+      if (!inf.valida) {
+        displayPopupWait("Esa ranura esta vacia", 3000);
+        return;
+      }
+      gTrkElegido = slot;
+      pantallaTracksAbre(TRK_PANT_ACCION, 2);
+      return;
+    }
+    return;
+  }
+
+  if (gTrkPant == TRK_PANT_ACCION) {
+    if (gTrkFila == 0) { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }   // "< Volver"
+    if (gTrkFila == 1) { pantallaTracksCierra(); menuClose(); return; }     // "Salir"
+    if (gTrkFila == 4) {
+      // "Finalizar guiado": se para el motor y se vuelve a la lista de tracks, que es donde
+      // estaba. Si no habia guiado en marcha, se dice (no se finge que se ha hecho algo).
+      if (!tracksGuiaActivo()) { displayPopupWait("No hay guiado en marcha", 3000); return; }
+      tracksGuiaTermina();
+      pantallaTracksAbre(TRK_PANT_LISTA, 2);
+      return;
+    }
+    // â˜…â˜… "Hacia adelante" (2) y "Hacia atras" (3): AQUI ARRANCA EL GUIADO DE VERDAD â˜…â˜…
+    //   Se le dice al motor de donde sale el track y en que sentido, y se abre la pantalla de
+    //   guiado. El motor exige al menos 2 puntos y, si no los hay, no arranca: por eso se mira
+    //   el resultado en vez de dar por hecho que ha ido bien.
+    {
+      const TrackFuente fuente = (gTrkElegido < 0) ? TRK_FUENTE_VIVO : TRK_FUENTE_RANURA;
+      const bool alReves = (gTrkFila == 3);
+      if (!tracksGuiaEmpieza(fuente, gTrkElegido, alReves)) {
+        displayPopupWait("Ese track no tiene puntos suficientes", 3000);
+        return;
+      }
+      gTrkZoomCompleto = false;     // se empieza de CERCA: al guiar se quiere navegar
+      pantallaTracksAbre(TRK_PANT_GUIA, 0);
+      return;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+//  La pantalla de GUIADO tiene sus propias reglas de boton:
+//    - CORTO: cambia entre la VENTANA DE CERCA y el TRACK COMPLETO (lo pidio el operador).
+//    - LARGO: vuelve al menu de Tracks, para poder "Finalizar guiado". â˜… No se cierra el
+//      guiado: solo se sale a mirarlo, que es lo que se espera al pulsar largo.
+// ---------------------------------------------------------------------------------------
+void pantallaGuiaCorto() {
+  gTrkUltActMs = millis();
+  gTrkZoomCompleto = !gTrkZoomCompleto;
+  gDirty = true;
+}
+
+void pantallaGuiaLargo() {
+  gTrkUltActMs = millis();
+  // Vuelve a la LISTA de tracks (no al menu principal): desde ahi se elige el track y se llega
+  // a "Finalizar guiado" en dos pulsaciones, que es lo que pidio el operador.
+  pantallaTracksAbre(TRK_PANT_LISTA, 2);
+}
+
+void pantallaTracksLargo() {
+  gTrkUltActMs = millis();
+  // La pulsacion LARGA sube un nivel, igual que en el menu: de la pantalla de accion a la
+  // lista, y de la lista se cierra. Asi el gesto dice lo mismo en todas partes.
+  if (gTrkPant == TRK_PANT_ACCION) { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }
+  pantallaTracksCierra();
+}
+
+#endif  // TRACKS_DISPONIBLE
+
 void menuNavigate() {
+  // â˜… Las pantallas de TRACKS van primero: cuando estan abiertas SUSTITUYEN al menu, asi que
+  //   se llevan el boton. Se comportan como el menu (wrap de filas, auto-cierre de 15 s).
+#ifdef TRACKS_DISPONIBLE
+  if (pantallaTracksActiva()) {
+    // â˜… La pantalla de GUIADO no se cierra por tiempo (ver la explicacion en displayRefresh), y
+    //   ademas no tiene filas que recorrer: el toque corto cambia de vista (de cerca / track
+    //   completo). Las otras dos SI navegan por sus filas y SI se cierran por inactividad.
+    if (gTrkPant == TRK_PANT_GUIA) { pantallaGuiaCorto(); return; }
+    if ((uint32_t)(millis() - gTrkUltActMs) > 15000) { pantallaTracksCierra(); return; }
+    pantallaTracksNavega();
+    return;
+  }
+#endif
   if (!gMenuOn) return;
   gMenuLastActMs = millis();
   gUltimoToqueMs = millis();   // sello de "aqui ha habido mano del operador"
@@ -2911,7 +4178,7 @@ void menuNavigate() {
   displayBacklightKick();
   // ---- CONFIRMACION PENDIENTE: navegar NO hace nada ----
   // Mientras se esta preguntando "seguro?", mover el cursor seria invisible (la pantalla
-  // enseña el aviso, no la lista) y ademas dejaria al operador sin saber donde esta al
+  // enseÃ±a el aviso, no la lista) y ademas dejaria al operador sin saber donde esta al
   // volver. Se IGNORA el toque, igual que la OLED ignora el segundo "largo" cuando ya ha
   // pedido la confirmacion. Se sale confirmando (pulsacion CORTA del fisico: ver
   // menuEjecutaAccion) o dejando vencer la ventana. (Este comentario decia "largo" hasta el
@@ -2926,8 +4193,14 @@ void menuNavigate() {
     gDirty = true; return;
   }
   // ---- EDITOR DE PERFILES ----
-  if (gMenuPerfMode == 1) {        // 0..3 = perfil; 4 = "editar ajustes del activo"
-    gMenuPerfIdx = (gMenuPerfIdx + 1) % 5;
+  if (gMenuPerfMode == 1) {        // 0="< Volver"; 1="Salir"; 2..5=perfiles; 6="Editar ajs."
+    // â˜…â˜… EL TOPE TIENE QUE SER `kPerfFilas`, NO UN 5 A MANO (2026-09-22) â˜…â˜…
+    //   Aqui ponia `% 5` porque entonces la lista tenia 5 filas (4 perfiles + editar). Al
+    //   pasar a la estructura comun son 7, asi que con el 5 las dos ultimas filas quedaban
+    //   INALCANZABLES: el resaltado daba la vuelta antes de llegar. Es el tipo de fallo que no
+    //   se ve en una lectura rapida del codigo y que en la pantalla se nota como "no me deja
+    //   bajar hasta abajo".
+    gMenuPerfIdx = (gMenuPerfIdx + 1) % kPerfFilas;
     gDirty = true; return;
   }
   if (gMenuPerfMode == 2) {        // editar un campo del perfil: ciclo de valor
@@ -2944,7 +4217,7 @@ void menuNavigate() {
     } else if (gMenuPerfField == 3) {  // metros (0..5000, paso 50)
       int v = gCfg->profileDistM[p] + 50; if (v > 5000) v = 0;
       gCfg->profileDistM[p] = v;
-    } else {                            // ★ ICONO DEL MAPA de este perfil (2026-09-15)
+    } else {                            // â˜… ICONO DEL MAPA de este perfil (2026-09-15)
       // Se recorre la MISMA rueda que ensena la pantalla (kIconoNombre). Si el
       // valor guardado no es uno de los cuatro (lo puso el configurador), el
       // primer toque entra por el principio de la rueda en vez de quedarse quieto.
@@ -2980,6 +4253,15 @@ void menuNavigate() {
 }
 
 void menuShort() {
+#ifdef TRACKS_DISPONIBLE
+  // â˜… Las pantallas de tracks se llevan el boton cuando estan abiertas (sustituyen al menu).
+  if (pantallaTracksActiva()) {
+    if (gTrkPant == TRK_PANT_GUIA) { pantallaGuiaCorto(); return; }   // no se cierra por tiempo
+    if ((uint32_t)(millis() - gTrkUltActMs) > 15000) { pantallaTracksCierra(); return; }
+    pantallaTracksCorto();
+    return;
+  }
+#endif
   if (!gMenuOn) return;
   gMenuLastActMs = millis();
   displayBacklightKick();
@@ -3000,16 +4282,28 @@ void menuShort() {
     return;
   }
   // ---- EDITOR DE PERFILES ----
+  // â˜…â˜… MISMAS FILAS QUE LOS DEMAS SUBMENUS (2026-09-22) â˜…â˜…
+  //   Los indices son los mismos que en el submenu de opciones, a proposito:
+  //       0 = "< Volver"  -> sube un nivel (lo mismo que el largo del boton fisico)
+  //       1 = "Salir"     -> cierra el menu
+  //       2..5            -> los cuatro perfiles (elegir uno lo hace ACTIVO y lo guarda)
+  //       6 = "Editar ajs." -> editar los campos del perfil activo
+  //   Antes solo existian 0..4 y su sentido era OTRO (0..3 = perfil, 4 = editar ajustes), o
+  //   sea que la fila 0 elegia un perfil en vez de volver. Ese desplazamiento es justo lo que
+  //   hacia que este submenu pareciera de otro firmware.
   if (gMenuPerfMode == 1) {
-    if (gMenuPerfIdx < 4) {
-      gCfg->smartBeaconPreset = (uint8_t)gMenuPerfIdx;   // elegir perfil = hacerlo activo
+    if (gMenuPerfIdx == 0) { gMenuPerfMode = 0; gDirty = true; return; }   // Volver
+    if (gMenuPerfIdx == 1) { menuClose(); return; }                        // Salir
+    if (gMenuPerfIdx < 2 + 4) {
+      gCfg->smartBeaconPreset = (uint8_t)(gMenuPerfIdx - 2);   // elegir perfil = hacerlo activo
       storeSave(*gCfg);
       gDirty = true; return;
-    } else {
-      int activo = gCfg->smartBeaconPreset; if (activo > 3) activo = 0;
-      gMenuPerfIdx = activo; gMenuPerfField = 0; gMenuPerfMode = 2;   // editar el activo
-      gDirty = true; return;
     }
+    // fila 6: editar los ajustes del perfil ACTIVO (no del resaltado): se entra siempre en el
+    // que esta en uso, que es lo que el operador espera al decir "editar este perfil".
+    int activo = gCfg->smartBeaconPreset; if (activo > 3) activo = 0;
+    gMenuPerfIdx = activo; gMenuPerfField = 0; gMenuPerfMode = 2;
+    gDirty = true; return;
   }
   if (gMenuPerfMode == 2) {
     gMenuPerfField++; if (gMenuPerfField > kPerfCampos - 1) { gMenuPerfField = 0; gMenuPerfMode = 1; }
@@ -3040,12 +4334,13 @@ void menuShort() {
     // Dormir (fila virtual del menu principal): pasa por el MISMO camino que las demas
     // acciones, asi que tambien pide confirmacion (auditoria G2).
     if (menuMainEsDormir(gMenuIdx)) { menuEjecutaAccion(ACT_SLEEP); return; }
+    if (menuMainEsApagar(gMenuIdx)) { menuEjecutaAccion(ACT_SHUTDOWN); return; }
     int sec = menuMainFilaSeccion(gMenuIdx, n);
-    // ★ SECCION "MODO" abre DIRECTAMENTE la lista de modos (2026-09-15): como esa seccion
-    //   solo tiene el ítem "Modo", se salta un nivel y van los modos por linea, sin la
+    // â˜… SECCION "MODO" abre DIRECTAMENTE la lista de modos (2026-09-15): como esa seccion
+    //   solo tiene el Ã­tem "Modo", se salta un nivel y van los modos por linea, sin la
     //   pantalla intermedia de "Modo -> Modo".
     if (sec == 0) {
-      gMenuEnumAbs = 0;              // ítem "Modo" (kMenu[0])
+      gMenuEnumAbs = 0;              // Ã­tem "Modo" (kMenu[0])
       gMenuEnumIdx = 2;
       gDirty = true; return;
     }
@@ -3061,6 +4356,15 @@ void menuShort() {
   int iAbs = idx - 2;
   if (iAbs < (b - a)) {
     const MenuItem &it = kMenu[a + iAbs];
+#ifdef TRACKS_DISPONIBLE
+    // â˜…â˜… LAS TRES FILAS DE TRACKS ABREN SU PANTALLA, NO EJECUTAN UNA ACCION (2026-09-22) â˜…â˜…
+    //   Se interceptan AQUI, antes del despacho de acciones, y por su `key`. Asi no hay forma
+    //   de que acaben en `menuEjecutaAccion` (que es para reiniciar, borrar y demas) ni en el
+    //   editor de valores: son puertas, no ajustes. Ver `pantallaTracks()`.
+    if (it.key && !strcmp(it.key, "tkVivo"))  { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }
+    if (it.key && !strcmp(it.key, "tkSlots")) { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }
+    if (it.key && !strcmp(it.key, "tkCasa"))  { pantallaTracksAbre(TRK_PANT_LISTA, 7); return; }
+#endif
     gMenuEditItemAbs = a + iAbs;
     if (it.kind == MK_ACTION) { menuEjecutaAccion(it.action); }
     else if (it.kind == MK_BOOL) { editaSiguiente(it); }
@@ -3084,6 +4388,13 @@ void menuShort() {
 }
 
 void menuLong() {
+#ifdef TRACKS_DISPONIBLE
+  if (pantallaTracksActiva()) {
+    if (gTrkPant == TRK_PANT_GUIA) { pantallaGuiaLargo(); return; }
+    pantallaTracksLargo();
+    return;
+  }
+#endif
   if (!gMenuOn) return;
   gMenuLastActMs = millis();
   displayBacklightKick();
@@ -3106,7 +4417,7 @@ void menuOpen() { gMenuOn = true; gMenuCat = -1; gMenuIdx = 0; gMenuPerfMode = 0
 // menu con la ventana de 3 s todavia viva, la primera pulsacion larga ejecutaria el
 // borrado sin preguntar (justo lo que este arreglo viene a impedir).
 void menuClose() { gMenuOn = false; gMenuEditing = false; gMenuIdx = 0; gMenuPerfMode = 0; gConfirmAction = 0; gConfirmUntil = 0; gDirty = true; }
-// ★★ DOBLE TOQUE = RESTAR (2026-09-15) ★★
+// â˜…â˜… DOBLE TOQUE = RESTAR (2026-09-15) â˜…â˜…
 // Esta funcion es el UNICO camino por el que entra el DOBLE TOQUE fisico en el menu:
 // main.cpp (handleButton, rama BTN_DOUBLE) solo la llama `if (menuIsEditing())`, asi que
 // desde aqui no se puede estropear nada de las otras pantallas. El porque del gesto y el
@@ -3137,6 +4448,28 @@ void menuEditCancel() {
 // ---- RENDER ----
 // Auto-cierre del menu a los 15 s sin tocar (peticion del operador, 2026-09-15): si nadie
 // interactua, el menu se cierra solo y la pantalla vuelve al carrusel.
+// â˜…â˜… LOS PERFILES PASAN A LA ESTRUCTURA COMUN DEL MENU (2026-09-22) â˜…â˜…
+//
+// QUE PASABA (lo cazo el operador): el submenu de perfiles era el UNICO que no seguia el patron
+// de los demas. Dos diferencias, y las dos se ven en la pantalla:
+//
+//   1. NO TENIA "Volver" NI "Salir" EN PANTALLA. Los demas submenus los llevan en las filas 0
+//      y 1 (`< Volver` / `Salir`, ver `menuShort` y el pintado del submenu de opciones). Aqui
+//      no habia nada: para salir habia que saber que la PULSACION LARGA del boton fisico sube
+//      un nivel (`menuLong`), cosa que la pantalla no decia por ningun lado. El nodo no se
+//      quedaba atrapado, pero el operador no tenia forma de saberlo mirando.
+//   2. EL TEXTO ERA MAS PEQUENO: escala 1, cuando el resto del menu va a escala 2
+//      (`const int esc = 2;   // letra mas grande (peticion del operador)`). Se veia
+//      claramente mas pequeno que el menu del que venias.
+//
+// AHORA usa las MISMAS filas que los demas submenus, con los MISMOS indices:
+//      fila 0        -> "< Volver"        (sube un nivel, igual que el largo del fisico)
+//      fila 1        -> "Salir"           (cierra el menu)
+//      filas 2..5    -> los cuatro perfiles
+//      fila 6        -> "Editar ajs."     (editar los ajustes del perfil ACTIVO)
+// para que el gesto y la pantalla digan lo mismo en todo el menu.
+const char *kPerfName[4] = {"Fijo/Digi", "Peaton", "Bicicleta", "Coche"};
+
 void menuPinta() {
   if (gMenuOn && (uint32_t)(millis() - gMenuLastActMs) > 15000) {
     menuClose();
@@ -3147,7 +4480,7 @@ void menuPinta() {
   const int rowH = 18;                     // alto de fila para escala 2
   const int y0 = 30;
 
-  // ★★ PANTALLA DE CONFIRMACION (2026-09-15, arreglo de la auditoria G2) ★★
+  // â˜…â˜… PANTALLA DE CONFIRMACION (2026-09-15, arreglo de la auditoria G2) â˜…â˜…
   //   En la OLED el aviso es el popup "Pulsa largo: confirmar", que dura lo que dura un
   //   popup. Aqui NO vale: el panel tarda ~1,5 s por refresco y el operador se lo perderia.
   //   Por eso el aviso es una PANTALLA ENTERA que se queda fija (tinta bistable) hasta que
@@ -3161,14 +4494,14 @@ void menuPinta() {
   //   Si vence la ventana (kConfirmMs) sin confirmar, esto se apaga solo en el siguiente
   //   refresco (menuPinta se llama desde displayRefresh) y vuelve a verse la lista.
   //
-  //   ★★ OJO: AQUI PUSO "PULSA LARGO OTRA VEZ" Y ESTUVO MAL HASTA EL 2026-09-16 ★★
+  //   â˜…â˜… OJO: AQUI PUSO "PULSA LARGO OTRA VEZ" Y ESTUVO MAL HASTA EL 2026-09-16 â˜…â˜…
   //     Ese texto venia copiado de la OLED, donde el gesto que confirma SI es el largo. En
   //     esta pantalla es AL REVES, porque el mapa del menu de tinta es el otro (el que dice
   //     el manual): CORTO = entrar / ejecutar / confirmar; LARGO = volver atras, y aqui
   //     volver atras es CANCELAR (ver menuLong: `if (confirmacionPendiente()) gConfirmAction = 0`).
   //     O sea que la pantalla mandaba hacer justo el gesto que cancela, y ademas se
   //     contradecia con su propia ultima linea ("fisico largo: cancelar"). Lo cazo el
-  //     operador: «mantengo pulsado y solo sale del menu». NO es del Project Butter: el
+  //     operador: Â«mantengo pulsado y solo sale del menuÂ». NO es del Project Butter: el
   //     gesto no se ha tocado, lo que estaba mal era la instruccion.
   if (gMenuOn && confirmacionPendiente()) {
     const char *tit = tituloConfirmacion(gConfirmAction);
@@ -3190,13 +4523,13 @@ void menuPinta() {
     }
   }
 
-  // ★ PANTALLA DE EDICION LIMPIA (2026-09-15): al editar un valor se dibuja SOLO esta
+  // â˜… PANTALLA DE EDICION LIMPIA (2026-09-15): al editar un valor se dibuja SOLO esta
   //   pantalla (etiqueta + valor grande + cursor), NO el menu detras. Sustituye al antiguo
   //   banner que se montaba encima del menu arruinando la lectura.
   if (gMenuOn && gMenuEditing && gMenuEditItemAbs >= 0 && gMenuEditItemAbs < kMenuCount) {
     const MenuItem &it = kMenu[gMenuEditItemAbs];
     drawTextCenter(12, it.label, 2);
-    // ★ AVISO DE AJUSTE QUE NO HACE NADA (2026-09-15, arreglo de la auditoria G3).
+    // â˜… AVISO DE AJUSTE QUE NO HACE NADA (2026-09-15, arreglo de la auditoria G3).
     //   Aqui es donde el operador se entera: no en la lista (donde el "(no)" se pierde
     //   entre comillas), sino al ENTRAR a tocarlo. Se dice que se guarda (es verdad: se
     //   guarda en la flash y lo puede usar la OLED o el configurador) pero que en esta
@@ -3213,7 +4546,7 @@ void menuPinta() {
     int xx = (EPD_W - textWidth(gEditBuf, 3)) / 2; if (xx < 4) xx = 4;
     int cxl = xx + gEditPos * textWidth("W", 3);
     barraV(cxl, 96, 100, 6);              // subrayado del caracter que se edita
-    // ★ PISTA DEL GESTO DE RESTAR (2026-09-15): el doble toque no tiene ninguna marca en
+    // â˜… PISTA DEL GESTO DE RESTAR (2026-09-15): el doble toque no tiene ninguna marca en
     //   la pantalla, asi que se dice aqui. SOLO en los campos numericos, que son los
     //   unicos en los que el doble toque resta: en el texto sigue siendo "cancelar la
     //   edicion" (ver menuEditCancel) y ponerlo ahi seria mentir. Escala 1 y centrado:
@@ -3251,34 +4584,54 @@ void menuPinta() {
   }
 
   // ---- EDITOR DE PERFILES (2026-09-15) ----
-  const char *kPerfName[4] = {"Fijo/Digi","Peaton","Bicicleta","Coche"};
   if (gMenuPerfMode == 1) {
-    drawTextCenter(12, "PERFILES", 1);
+    // â˜…â˜… MISMA ESTRUCTURA QUE LOS DEMAS SUBMENUS (2026-09-22) â˜…â˜…
+    //   Antes esto era un bucle de 4 filas a ESCALA 1 y sin "< Volver" / "Salir": el unico
+    //   submenu del T-Echo que no seguia el patron, y se notaba en las dos cosas (no habia
+    //   salida a la vista y la letra era mas pequena que el resto del menu). Ver la nota de
+    //   `kPerfName` para el detalle completo.
+    //   Ahora: fila 0 = "< Volver", fila 1 = "Salir", filas 2..5 = los cuatro perfiles,
+    //   fila 6 = "Editar ajs.", y todo a `esc` (escala 2) como los otros submenus.
+    drawTextCenter(12, "PERFILES", 1);   // el titulo sigue a escala 1, como los demas
     int y = y0;
-    for (int i = 0; i < 4 && y < 160; i++, y += rowH) {
-      if (i == gMenuPerfIdx) { barraH(6, EPD_W-6, y-1,1); barraH(6, EPD_W-6, y+rowH-2,1); barraV(6,y-1,y+rowH-2,1); barraV(EPD_W-6,y-1,y+rowH-2,1); }
-      char row[40];
-      snprintf(row, sizeof(row), "%s%s", kPerfName[i],
-               (i == (int)gCfg->smartBeaconPreset) ? "  >" : "");
-      drawText(14, y, row, 1);
+    for (int r = 0; r < kPerfFilas && y < 186; r++, y += rowH) {
+      if (r == gMenuPerfIdx) { barraH(6, EPD_W-6, y-1,1); barraH(6, EPD_W-6, y+rowH-2,1); barraV(6,y-1,y+rowH-2,1); barraV(EPD_W-6,y-1,y+rowH-2,1); }
+      if (r == 0) { drawText(14, y, "< Volver", esc); continue; }
+      if (r == 1) { drawText(14, y, "Salir", esc); continue; }
+      if (r < 2 + 4) {
+        char row[40];
+        snprintf(row, sizeof(row), "%s%s", kPerfName[r - 2],
+                 (r - 2 == (int)gCfg->smartBeaconPreset) ? "  >" : "");
+        drawText(14, y, row, esc);
+        continue;
+      }
+      // fila 6: editar los ajustes del perfil ACTIVO. "Editar ajs." son 12 caracteres y caben
+      // a escala 2 (tope 16): "Editar ajustes" serian 14 y tambien caben, pero con el "  >" de
+      // marcas y para dejar aire se usa la forma corta.
+      drawText(14, y, "Editar ajs.", esc);
     }
-    // fila 5: editar ajustes del perfil activo
-    if (4 == gMenuPerfIdx) { barraH(6, EPD_W-6, y-1,1); barraH(6, EPD_W-6, y+rowH-2,1); barraV(6,y-1,y+rowH-2,1); barraV(EPD_W-6,y-1,y+rowH-2,1); }
-    drawText(14, y, "Editar ajustes", 1);
     return;
   }
   if (gMenuPerfMode == 2) {
+    // â˜…â˜… TAMBIEN A ESCALA 2 (2026-09-22) â˜…â˜…
+    //   Estaba a escala 1, como la lista de perfiles, y por el mismo motivo se veia mas pequeno
+    //   que el resto del menu. Al subir a escala 2 hay que acortar los nombres de los campos:
+    //   a escala 2 el tope son 16 caracteres, y las filas llevan "etiqueta: valor" mas el "  <"
+    //   de "pulsa corto para cambiar".
+    //
+    //   â˜… LAS CUENTAS, porque aqui no cabe todo lo que cabia:
+    //     "SSID: 15  <"        = 12  CABE
+    //     "Lento(s): 300  <"   = 17  NO CABE  -> "Lento: 300  <"   = 14  CABE
+    //     "Rapido(s): 30  <"   = 17  NO CABE  -> "Rapido: 30  <"   = 14  CABE
+    //     "Metros: 150  <"     = 14  CABE
+    //     "Icono: Coche  (/[)" = 19  NO CABE  -> "Icono: Coche  (/[)" no cabe; se deja el
+    //                                            nombre solo cuando el par no cabe
+    //   Lo que NO se puede acortar es el VALOR (los "Tiempo lent(s)" llegan a 3600 s), asi que
+    //   el ancho se recorta por la etiqueta, no por el dato.
     char t[24];
     snprintf(t, sizeof(t), "Perfil %s", kPerfName[gMenuPerfIdx]);
     drawTextCenter(12, t, 1);
-    // ★ CINCO campos desde el 2026-09-15: el ultimo es el ICONO DEL MAPA del
-    //   perfil (el que sale en aprs.fi). La fila del icono ensena las dos cosas:
-    //   el NOMBRE (que es lo que se elige, con un solo boton) y el PAR de codigos
-    //   APRS ("/[") entre parentesis, que es lo que sale al aire. El nombre va
-    //   PRIMERO para que quepa: "Icono: Persona  (/[)" son 20 caracteres a escala
-    //   1 = 120 px de los 200 del panel.
-    const char *fn[kPerfCampos] = {"SSID (1-15)", "Tiempo lent(s)", "Tiempo rap(s)",
-                                   "Metros", "Icono"};
+    const char *fn[kPerfCampos] = {"SSID (1-15)", "Lento", "Rapido", "Metros", "Icono"};
     int y = y0;
     for (int i = 0; i < kPerfCampos && y < 170; i++, y += rowH) {
       if (i == gMenuPerfField) { barraH(6, EPD_W-6, y-1,1); barraH(6, EPD_W-6, y+rowH-2,1); barraV(6,y-1,y+rowH-2,1); barraV(EPD_W-6,y-1,y+rowH-2,1); }
@@ -3298,12 +4651,24 @@ void menuPinta() {
         // Si el icono guardado no es uno de los cuatro de la rueda (lo puso el
         // configurador), se ensena el codigo tal cual en vez de mentir con un
         // nombre que no le corresponde.
-        snprintf(row, sizeof(row), "%s: %s  (%s)", fn[i],
-                 (idx >= 0) ? kIconoNombre[idx] : par, par);
+        // â˜… El par de codigos ("(/[") solo se puede ensenar si cabe: "Icono: Repetidor  (/[)"
+        //   son 24 caracteres y a escala 2 NO caben (el tope son 16). Se ensena el nombre, que
+        //   es lo que se elige con un solo boton; el par sale al aire y se consulta en el
+        //   configurador.
+        //   â˜… Y el nombre se pega a "Icono:" en el formato, para no gastar un caracter: el peor
+        //     de los cuatro es "Icono: Repetidor" = 16 caracteres EXACTOS = 190 px de los 200
+        //     del panel. Cabe justo, asi que no se puede anadir nada mas a esta fila.
+        const char *nom = (idx >= 0) ? kIconoNombre[idx] : par;
+        char conPar[44];
+        snprintf(conPar, sizeof(conPar), "Icono: %s  (%s)", nom, par);
+        if (textWidth(conPar, 2) <= EPD_W - 14) snprintf(row, sizeof(row), "%s", conPar);
+        else snprintf(row, sizeof(row), "Icono: %s", nom);
       }
-      drawText(14, y, row, 1);
+      // Si aun asi se pasara, `dibujaFilaMenu` lo deja en dos lineas o lo recorta con "..":
+      // nunca se pierde texto por el borde del panel (ver `parteEnEscalas`).
+      drawText(14, y, row, 2);
     }
-    drawText(14, y, "< Volver", 1);
+    drawText(14, y, "< Volver", 2);
     return;
   }
 
@@ -3322,6 +4687,7 @@ void menuPinta() {
       if (r == gMenuIdx) { barraH(6, EPD_W - 6, y - 1, 1); barraH(6, EPD_W - 6, y + rowH - 2, 1); barraV(6, y - 1, y + rowH - 2, 1); barraV(EPD_W - 6, y - 1, y + rowH - 2, 1); }
       if (menuMainFilaSalir(r, n)) drawText(14, y, "Salir", esc);
       else if (menuMainEsDormir(r)) drawText(14, y, "Dormir", esc);
+      else if (menuMainEsApagar(r)) drawText(14, y, "Apagar", esc);
       else {
         int sec = menuMainFilaSeccion(r, n);
         if (sec >= 0) drawText(14, y, kMenuSections[sec], esc);
@@ -3331,12 +4697,12 @@ void menuPinta() {
     int a = kMenuSectionFirst[gMenuCat];
     int b = kMenuSectionEnd[gMenuCat];
     drawTextCenter(12, kMenuSections[gMenuCat], 1);
-    // ★ LEYENDA DEL ASTERISCO (2026-09-15, arreglo G3): solo en las categorias que tienen
+    // â˜… LEYENDA DEL ASTERISCO (2026-09-15, arreglo G3): solo en las categorias que tienen
     //   algun ajuste inerte, y en letra pequena para no quitar sitio a las filas. Dice que
     //   significa el " *" que llevan esas etiquetas. La explicacion larga sale al ENTRAR
     //   en el item (ver la pantalla de edicion).
     if (seccionTieneInerte(gMenuCat)) {
-      drawTextCenter(24, " * se guarda pero no hace nada aqui", 1);
+      drawTextCenter(24, " * se guarda, no hace nada aqui", 1);
     }
     // filas: 0=Volver, 1=Salir, 2+i=item
     int itemCount = b - a;
@@ -3352,11 +4718,11 @@ void menuPinta() {
       if (iAbs < itemCount) {
         const MenuItem &it = kMenu[a + iAbs];
         if (!menuItemVisible(it)) { continue; }
-        // ★ (2026-09-15) Solo la ETIQUETA, en grande. Se elimina el valor a la derecha:
-        //   con textos largos se pisaba, y el valor en minuscula rompía la coherencia.
+        // â˜… (2026-09-15) Solo la ETIQUETA, en grande. Se elimina el valor a la derecha:
+        //   con textos largos se pisaba, y el valor en minuscula rompÃ­a la coherencia.
         //   Para ver/cambiar el valor se ENTRA en la opcion (submenu o pantalla de edicion).
         //
-        // ★ TNC EN PALABRA (2026-09-15, peticion del operador): el protocolo del puerto
+        // â˜… TNC EN PALABRA (2026-09-15, peticion del operador): el protocolo del puerto
         //   USB se lee como "TNC: OFF" / "TNC: TNC2" / "TNC: KISS", no como un numero de
         //   la configuracion. Es el UNICO item con valor en la fila a proposito: la regla
         //   de esta lista es "solo la etiqueta" (los valores largos se pisaban), y esta
@@ -3369,7 +4735,44 @@ void menuPinta() {
           drawText(14, y, conTnc, esc);
           continue;   // fila ya pintada: el "continue" del for no se salta nada mas
         }
-        // ★ AVISO DE AJUSTE INERTE (2026-09-15, arreglo G3): los items que en esta placa se
+        // â˜…â˜… LAS TRES FILAS DE TRACKS (2026-09-22) â˜…â˜…
+        //   Su texto se calcula al pintar porque depende de lo que haya guardado. Va con guarda
+        //   `TRACKS_DISPONIBLE`: en las Faketec esta seccion no existe (ver tracks.h), y sus
+        //   filas se pintan con la etiqueta de respaldo de `kMenu[]`.
+#ifdef TRACKS_DISPONIBLE
+        if (it.key && !strcmp(it.key, "tkVivo")) {
+          // â˜… FECHA Y HORA, como pidio el operador (nada de nombres de ruta). Es la fecha en que
+          //   EMPEZO el track en vivo, y sobrevive a un reinicio. Si el GPS aun no tenia hora
+          //   cuando empezo, se dice: inventar una fecha seria mentir en el diario del nodo.
+          char b[26];
+          uint16_t y = 0; uint8_t mo = 0, d = 0, h = 0, mi = 0;
+          if (tracksVivoCuando(&y, &mo, &d, &h, &mi)) {
+            snprintf(b, sizeof b, "Vivo %02u/%02u %02u:%02u", (unsigned)d, (unsigned)mo,
+                     (unsigned)h, (unsigned)mi);
+          } else {
+            // â˜…â˜… "SIN HORA GPS" Y NO "SIN HORA" (2026-09-22) â˜…â˜…
+            //   Lo pidio el operador: "una persona normal no va a entender eso". Tenia razon: sin
+            //   decir de DONDE tendria que venir la hora, parece un fallo del aparato. Con "GPS"
+            //   se entiende que es el satelite el que todavia no la ha dado.
+            snprintf(b, sizeof b, "Sin hora GPS");
+          }
+          drawText(14, y, b, esc);
+          continue;
+        }
+        if (it.key && !strcmp(it.key, "tkSlots")) {
+          char b[24];
+          int n = 0;
+          for (uint8_t i = 0; i < TRACK_SLOTS; i++) {
+            TrackRanuraInfo inf;
+            tracksRanuraInfo(i, &inf);
+            if (inf.valida) n++;
+          }
+          snprintf(b, sizeof b, "Ranuras: %d/%d", n, (int)TRACK_SLOTS);
+          drawText(14, y, b, esc);
+          continue;
+        }
+#endif
+        // â˜… AVISO DE AJUSTE INERTE (2026-09-15, arreglo G3): los items que en esta placa se
         //   guardan pero no hacen nada llevan un " *" pegado a la etiqueta, y la leyenda de
         //   arriba dice que significa. Al ENTRAR en el item, la pantalla de edicion lo
         //   explica con todas las letras ("se guarda, pero en esta pantalla NO hace nada").
@@ -3388,17 +4791,17 @@ void menuPinta() {
 }
 
 void displayNextScene(bool porToque) {
-  if (menuIsOpen()) return;   // con el menú abierto, el short no cambia de diapositiva
+  if (menuIsOpen()) return;   // con el menÃº abierto, el short no cambia de diapositiva
   gEscena = (uint8_t)((gEscena + 1) % kNumEscenas);
   gUltimoCambioEscenaMs = millis();
   gUltimoToqueMs = millis();     // sello de "aqui ha habido mano del operador"
-  // ★ Solo el TACTIL agrupa repintados (ver kAgrupaToquesMs). El fisico llega con su
+  // â˜… Solo el TACTIL agrupa repintados (ver kAgrupaToquesMs). El fisico llega con su
   //   ventana de 600 ms ya cumplida: aplazarle el pintado no agrupa nada, solo retrasa.
   if (porToque) gUltimoToqueAgrupaMs = millis();
   gCarruselPausadoHasta = millis() + kPausaTrasBotonMs;
   displayBacklightKick();
   gDirty = true;
-  // ★ DIAGNOSTICO (2026-09-16): cada cambio de diapositiva A MANO se anuncia por el USB,
+  // â˜… DIAGNOSTICO (2026-09-16): cada cambio de diapositiva A MANO se anuncia por el USB,
   //   igual que el del carrusel automatico (ver mas abajo). Es lo que permite COMPROBAR
   //   que cuatro toques seguidos son CUATRO cambios y no uno, sin depender de la vista:
   //   se cuentan las lineas y se miran los repintados que hay entre ellas.
@@ -3409,8 +4812,8 @@ void displayNextScene(bool porToque) {
 
 void displayPopup(const char *text) {
   if (!text) return;
-  // ★★ LOS AVISOS DE PROGRESO DE "FIJAR COORDS" LOS PINTA LA PANTALLA DE LA
-  //   SESION, NO ESTE CAMINO (2026-09-15) ★★
+  // â˜…â˜… LOS AVISOS DE PROGRESO DE "FIJAR COORDS" LOS PINTA LA PANTALLA DE LA
+  //   SESION, NO ESTE CAMINO (2026-09-15) â˜…â˜…
   //   El bucle principal (main.cpp) manda "GPS 3/20" por CADA muestra mientras la
   //   sesion esta en fase 2. En la OLED eso es un aviso por segundo y se ve; en
   //   tinta cada aviso seria un refresco de 1,5 s (unos 30 s de panel pintando
@@ -3443,7 +4846,7 @@ void displayPopup(const char *text) {
 // se escribe en la configuracion a mano: una latitud fuera de rango tiene que dar
 // error, no colarse en la flash.
 //
-// ★ PRIMERO SE COMPRUEBA TODO, DESPUES SE GUARDA UNA SOLA VEZ: son DOS claves
+// â˜… PRIMERO SE COMPRUEBA TODO, DESPUES SE GUARDA UNA SOLA VEZ: son DOS claves
 //   (latitude y longitude) y cada una es un merge completo, asi que si la latitud
 //   entrara y la longitud no, el nodo se quedaria con una posicion a medias (la
 //   latitud nueva con la longitud vieja: un punto que no existe). Por eso:
@@ -3495,19 +4898,59 @@ bool displaySaveCoords(double lat, double lon) {
   return true;
 }
 
+// â˜… PUERTA UNICA PARA LOS BANCOS DE PRUEBA (2026-09-21): dibuja un aviso y lo manda al panel.
+//   Existe para que un firmware de medida (hello_pad.cpp, entorno techo_plus_pad) pueda usar
+//   el driver de verdad sin arrastrar todo el programa. NO se exponen `epdFlush()` ni
+//   `epdFullRefresh()`: viven en el espacio de nombres anonimo de arriba, y declararlas en la
+//   cabecera crea ambiguedad en cada llamada de este fichero (medido: "call of overloaded
+//   epdFlush() is ambiguous"). Con una sola puerta y un nombre propio no hay ambiguedad.
+void epdBancoAvisoYRefresca(const char *texto) {
+  if (!texto) return;
+  displayPopup(texto);   // dibuja en memoria y deja `gDirty`
+  epdFlush();            // y esto lo manda al panel (parcial o completo, lo decide el driver)
+}
+
 void displayPopupWait(const char *text, uint32_t totalMs) {
-  // ★ POPUP BONITO (2026-09-15): recuadro negro con texto invertido, centrado, que dura
+  // â˜… POPUP BONITO (2026-09-15): recuadro negro con texto invertido, centrado, que dura
   //   `totalMs` y luego vuelve al carrusel. Se usa p.ej. para avisar del modo Dormir con
   //   el USB conectado ("solo sin cable USB").
   if (text) {
     // pintar la escena de fondo limpia y el recuadro encima
     if (gReady) {
       dibujaEscena();                       // fondo (carrusel/aviso actual)
-      const int tw = textWidth(text, 2);
+      // â˜…â˜… QUE EL TEXTO QUEPA EN EL PANEL (2026-09-22) â˜…â˜…
+      //   ANTES: `bw = tw + 40` y `drawTextInv()` NO recorta, asi que un texto de mas de ~13
+      //   caracteres a escala 2 sacaba el recuadro por la derecha y perdia letras por el borde.
+      //   Y este es justo el popup que se usa ANTES DE DORMIR ("DURMIENDO: BATERIA BAJA" son
+      //   252 px): el momento en que el aviso tiene que leerse entero.
+      //   AHORA: si no cabe a escala 2 se parte en DOS LINEAS (hay sitio de sobra: el recuadro
+      //   va centrado en 200 px de alto y solo ocupa 38) y crece hacia arriba. Si no hubiera
+      //   ningun espacio donde partir, se recorta anadiendo ".." para que se vea que falta algo.
+      char l1[64], l2[64];
+      snprintf(l1, sizeof(l1), "%s", text);
+      l2[0] = '\0';
+      int e1 = 2, e2 = 1;
+      if (!cabeTexto(l1, 2, EPD_W - 40)) {
+        char a[64], b[64];
+        int ea = 0, eb = 0;
+        if (parteEnEscalas(l1, a, sizeof(a), &ea, b, sizeof(b), &eb)) {
+          // â˜… Se parte igual que en `pintaAviso`: las dos lineas lo mas grandes que quepan.
+          snprintf(l1, sizeof(l1), "%s", a);
+          snprintf(l2, sizeof(l2), "%s", b);
+          e1 = ea; e2 = eb;
+        } else {
+          recortaA(l1, 2, EPD_W - 40, l1, sizeof(l1));
+        }
+      }
+      const bool dosLineas = (l2[0] != '\0');
+      int tw = textWidth(l1, e1);
+      if (dosLineas) { const int t2w = textWidth(l2, e2); if (t2w > tw) tw = t2w; }
       int bx = (EPD_W - tw - 40) / 2; if (bx < 6) bx = 6;
-      const int bw = tw + 40;
-      const int bh = 38;
-      const int by = (EPD_H - bh) / 2;
+      int bw = tw + 40;
+      if (bw > EPD_W - 12) bw = EPD_W - 12;
+      const int bh = dosLineas ? 56 : 38;
+      // El de dos lineas SUBE 18 px para no salirse por abajo: centrado ocupa 38 y crece 18 mas.
+      const int by = dosLineas ? ((EPD_H - bh) / 2 - 18) : ((EPD_H - bh) / 2);
       // Recuadro negro con las esquinas cortadas (pastilla), hecho a mano porque
       // pastillaRellena vive en el namespace de dibujo y no es accesible aqui.
       relleno(bx, by, bw, bh);                     // cuerpo
@@ -3519,8 +4962,15 @@ void displayPopupWait(const char *text, uint32_t totalMs) {
       px(bx, by + bh - 2, false);
       px(bx + bw - 1, by + bh - 1, false); px(bx + bw - 2, by + bh - 1, false);   // inferior derecha
       px(bx + bw - 1, by + bh - 2, false);
-      drawTextInv((EPD_W - tw) / 2, by + 12, text, 2);   // texto invertido, centrado
-      // ★ OJO (2026-09-15): aqui estaba `gDirty = false;` ANTES de epdFlush(), y
+      if (dosLineas) {
+        const int t1 = textWidth(l1, e1);
+        const int t2 = textWidth(l2, e2);
+        drawTextInv((EPD_W - t1) / 2, by + 8, l1, e1);
+        drawTextInv((EPD_W - t2) / 2, by + 34, l2, e2);
+      } else {
+        drawTextInv((EPD_W - tw) / 2, by + 12, l1, 2);   // texto invertido, centrado
+      }
+      // â˜… OJO (2026-09-15): aqui estaba `gDirty = false;` ANTES de epdFlush(), y
       //   epdFlush() empieza con `if (!gReady || !gDirty) return;` -> salia sin pintar
       //   NADA. Por eso el popup "no salia": se perdian los 3 s sin dibujar. La bandera
       //   la apaga epdFlush() el solo; aqui hay que DEJARLA EN ALTA para que pinte.
@@ -3561,7 +5011,7 @@ void displayNoteTx(const char *what) {
 // ---------------------------------------------------------------------------
 namespace {
 
-// ★ (subida a escala 2) `modoNombre()` se queda aqui aunque la escena de Estado ya no lo
+// â˜… (subida a escala 2) `modoNombre()` se queda aqui aunque la escena de Estado ya no lo
 //   use: el modo se quito de la linea de contadores porque a escala 2 no cabe junto a
 //   ellos (ver `pintaEstado()`). El atributo es solo para que el compilador no avise de
 //   "definida y no usada" (-Wunused-function) mientras no haya ninguna pantalla que la use.
@@ -3575,7 +5025,7 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-//  ★ CONTADOR EN TRES CARACTERES COMO MUCHO (subida a escala 2)
+//  â˜… CONTADOR EN TRES CARACTERES COMO MUCHO (subida a escala 2)
 //
 //  POR QUE HACE FALTA: a escala 2 el paso por caracter es 6*2 = 12 px, o sea que en los
 //  200 px de ancho caben 16 caracteres. La linea que pedia el encargo
@@ -3620,24 +5070,24 @@ int bateriaPct() {
 }
 
 // ---------------------------------------------------------------------------
-//  ★★ CABECERA Y PIE — EL ESTILO DE LA OLED, adaptado a este panel 200x200 vertical ★★
+//  â˜…â˜… CABECERA Y PIE â€” EL ESTILO DE LA OLED, adaptado a este panel 200x200 vertical â˜…â˜…
 //
 //  Se replica la interfaz de la OLED (display.cpp) pero con las zonas pensadas para
 //  nuestra resolucion y con un UNICO escalado de texto (coherencia):
 //
 //    ARRIBA  (y 4..25)
-//      ┌─ pastilla con el titulo de la pantalla: indicativo + modo
-//      └─ a la derecha: pastilla RX/TX (se R-ellen-0 en negro al transmitir; MUTE si
+//      â”Œâ”€ pastilla con el titulo de la pantalla: indicativo + modo
+//      â””â”€ a la derecha: pastilla RX/TX (se R-ellen-0 en negro al transmitir; MUTE si
 //         el nodo esta silenciado; "--" si la radio no esta lista)
-//    DEBAJO  separador discontinuo (guiño al aleman)
+//    DEBAJO  separador discontinuo (guiÃ±o al aleman)
 //    ABAJO   (y ~184..196)
-//      ┌─ rectangulitos del carrusel: el de la pantalla actual relleno
-//      └─ a la derecha: bateria con su % y el cuerpo que se llena/vacia
+//      â”Œâ”€ rectangulitos del carrusel: el de la pantalla actual relleno
+//      â””â”€ a la derecha: bateria con su % y el cuerpo que se llena/vacia
 //
 //  La leccion de la OLED: "lo invertido comunica estado" (RX contorneado, TX relleno).
 // ---------------------------------------------------------------------------
 
-// ── pastilla (ovalo aproximado) de la cabecera: rectangulo relleno con las esquinas
+// â”€â”€ pastilla (ovalo aproximado) de la cabecera: rectangulo relleno con las esquinas
 // redondeadas a mano (en esta resolucion basta con cortar las esquinas).
 void pastillaRellena(int x0, int y0, int x1, int y1) {
   relleno(x0, y0, x1 - x0, y1 - y0);          // cuerpo
@@ -3651,19 +5101,19 @@ void pastillaRellena(int x0, int y0, int x1, int y1) {
   px(x1, y1 - 1, false);
 }
 
-// ── OVALO de la cabecera: el titulo de la pantalla (tu indicativo + modo) en una pastilla
+// â”€â”€ OVALO de la cabecera: el titulo de la pantalla (tu indicativo + modo) en una pastilla
 // blanca con texto negro, como la `headerBar` de la OLED. Se adapta a la longitud.
 void pintaOvalo(const char *titulo) {
   const int pad = 8;                 // aire interior
   const int y0 = 4;                  // alto de la zona del titulo (se mantiene para el
                                      // alineado del texto, ya sin el rectangulo)
-  // ★ (2026-09-15) Se ELIMINA el rectangulo del titulo: ahora las diapositivas muestran el
+  // â˜… (2026-09-15) Se ELIMINA el rectangulo del titulo: ahora las diapositivas muestran el
   //   titulo como texto simple, sin la caja. Se conserva la columna x (8+pad) y la altura
   //   para que el dibujo quede igual de legible; la pastilla RX/TX de la derecha no cambia.
   drawText(8 + pad, y0 + 3, titulo, 2);
 }
 
-// ── pastilla RX/TX a la derecha de la cabecera, como `statusPill` de la OLED:
+// â”€â”€ pastilla RX/TX a la derecha de la cabecera, como `statusPill` de la OLED:
 // RX = solo contorno (texto negro, no transmite); TX = rellena de negro con texto blanco
 // cuando estoy transmitiendo (se mantiene 3 s tras el envio); MUTE si el nodo esta
 // silenciado; "--" si la radio no lista.
@@ -3690,19 +5140,31 @@ void pintaPillRX() {
   }
 }
 
-// ── CABECERA completa: ovalo con el titulo + pastilla RX/TX + separador discontinuo.
+// â”€â”€ CABECERA completa: ovalo con el titulo + pastilla RX/TX + separador discontinuo.
 void pintaCabecera(const char *titulo) {
   pintaOvalo(titulo);
   pintaPillRX();
-  // separador discontinuo a y=25 (5 on / 3 off), guiño al aleman
+  // separador discontinuo a y=25 (5 on / 3 off), guiÃ±o al aleman
   for (int x0 = 4; x0 < EPD_W - 4; x0 += 8) {
     int x1 = x0 + 4;
     if (x1 > EPD_W - 4) x1 = EPD_W - 4;
     hLine(x0, x1, 25, 1);
   }
+  // â˜…â˜… "GRAB OFF": EL AVISO DE QUE NO SE ESTA GRABANDO â˜…â˜…
+  //   â˜…â˜… AQUI NO, Y ESTA QUITADO A PROPOSITO (2026-09-22) â˜…â˜…
+  //     Estuvo pintado en esta cabecera, por el motivo de que "la cabecera sale en todas las
+  //     pantallas". Y estaba mal, por dos razones que el operador vio en el aparato antes que yo:
+  //       1) `tracksVivoGrabando()` es falso tambien SIN GPS, asi que el aviso se encendia al
+  //          arrancar y se quedaba FIJO para siempre: nada lo apagaba. Basura permanente en la
+  //          cabecera, detras de la pastilla RX.
+  //       2) Un aviso permanente no informa: se acaba ignorando.
+  //   â˜… DONDE VA AHORA: en la LISTA de tracks, que es donde se habla de la grabacion y donde el
+  //     operador mira cuando quiere saber que esta pasando. Ver la fila del track en vivo.
+  //   â˜… LA LECCION: una funcion que dice "no esta grabando" NO es lo mismo que "hay un problema".
+  //     Sin GPS no se graba, y eso ya lo dice la pantalla de guiado con "SIN GPS".
 }
 
-// ── ★★ EL AVISO, EN UN SOLO PASO (2026-09-15) ★★ ────────────────────────────
+// â”€â”€ â˜…â˜… EL AVISO, EN UN SOLO PASO (2026-09-15) â˜…â˜… â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // SUSTITUYE a `pintaAvisoTX()`, que dibujaba una banda "TX" mientras
 // `radioLastTxMs() < 3000`. Aquel era un SEGUNDO mecanismo de aviso con su PROPIO reloj
@@ -3719,13 +5181,61 @@ void pintaCabecera(const char *titulo) {
 // (y=186 en adelante), que es donde vive la bateria.
 void pintaAviso() {
   if (!gLinea1[0]) return;
-  const bool dosLineas = (gLinea2[0] != '\0');
+
+  // â˜…â˜… QUE EL TEXTO QUEPA DE VERDAD (2026-09-22, arreglo del aviso que se salia) â˜…â˜…
+  //   ANTES: el recuadro se recortaba a lo ancho del panel (`bw`), pero el texto se dibujaba a
+  //   su ancho natural y `drawText()` no recorta: lo que pasaba del borde se perdia. Medido:
+  //   "DURMIENDO: BATERIA BAJA" (22 caracteres) son 252 px sobre un panel de 200 -> 52 px fuera.
+  //
+  //   AHORA se prueban cuatro formas EN ESTE ORDEN, y solo se recorta como ultimo recurso:
+  //     1. UNA linea a escala 2  (lo normal: hasta 16 caracteres)
+  //     2. DOS lineas, las dos a escala 2 (la primera hasta 16, la segunda hasta 16)
+  //     3. DOS lineas a escala 1 (hasta 33 cada una): se lee mas pequeno, pero NO SE PIERDE
+  //        NADA. Es lo que cae casi siempre, y perder informacion es peor que leer pequeno
+  //        sobre todo en un aviso de bateria baja.
+  //     4. UNA linea a escala 1
+  //     5. y si aun asi no cabe, se recorta dejando ".." para que se VEA que falta texto.
+  char l1[64], l2[64];
+  snprintf(l1, sizeof(l1), "%s", gLinea1);
+  l2[0] = '\0';
+  if (gLinea2[0]) snprintf(l2, sizeof(l2), "%s", gLinea2);
+
+  const bool haySegunda = (l2[0] != '\0');
+  bool dosLineas = haySegunda;
+  int esc1 = 2, esc2 = 1;
+
+  if (!haySegunda) {
+    if (cabeTexto(l1, 2)) {
+      // 1) una linea a escala 2: lo normal
+    } else {
+      char a[64], b[64];
+      int ea = 0, eb = 0;
+      if (parteEnEscalas(l1, a, sizeof(a), &ea, b, sizeof(b), &eb)) {
+        // 2) DOS LINEAS con la escala que la propia funcion ha decidido (2 y 2 si caben, y si
+        //    no las dos a 1). Se lee lo mas grande posible sin perder nada.
+        snprintf(l1, sizeof(l1), "%s", a);
+        snprintf(l2, sizeof(l2), "%s", b);
+        dosLineas = true; esc1 = ea; esc2 = eb;
+      } else if (cabeTexto(l1, 1)) {
+        esc1 = 1;                                     // 3) una linea a escala 1
+      } else {
+        recortaA(l1, 2, kPanelW - 8, l1, sizeof(l1));     // 4) ultimo recurso
+      }
+    }
+  } else if (!cabeTexto(l1, 2)) {
+    // El aviso que YA traia segunda linea (RX/TX/REPITE con sus datos): si la primera no cabe
+    // a 2, se prueba a 1 antes de recortar, porque recortar pierde el dato.
+    if (cabeTexto(l1, 1)) esc1 = 1;
+    else recortaA(l1, 2, kPanelW - 8, l1, sizeof(l1));
+  }
+
   const int bh = dosLineas ? 58 : 38;
   const int by = dosLineas ? 104 : 114;
+
   // El ancho lo manda la linea mas larga, con margen a los lados y topes para que quepa.
-  int twMax = textWidth(gLinea1, 2);
+  int twMax = textWidth(l1, esc1);
   if (dosLineas) {
-    const int tw2 = textWidth(gLinea2, 1);
+    const int tw2 = textWidth(l2, esc2);
     if (tw2 > twMax) twMax = tw2;
   }
   int bw = twMax + 24;
@@ -3734,15 +5244,15 @@ void pintaAviso() {
   const int bx = (EPD_W - bw) / 2;
   // Recuadro negro (pastillaRellena corta las esquinas; el texto va invertido dentro).
   pastillaRellena(bx, by, bx + bw - 1, by + bh - 1);
-  const int t1 = textWidth(gLinea1, 2);
-  drawTextInv((EPD_W - t1) / 2, by + 8, gLinea1, 2);
+  const int t1 = textWidth(l1, esc1);
+  drawTextInv((EPD_W - t1) / 2, by + (dosLineas ? 8 : 12), l1, esc1);
   if (dosLineas) {
-    const int t2 = textWidth(gLinea2, 1);
-    drawTextInv((EPD_W - t2) / 2, by + 36, gLinea2, 1);
+    const int t2 = textWidth(l2, esc2);
+    drawTextInv((EPD_W - t2) / 2, by + 36, l2, esc2);
   }
 }
 
-// ── PIE: rectangulitos del carrusel (el actual relleno) a la izquierda + bateria a la
+// â”€â”€ PIE: rectangulitos del carrusel (el actual relleno) a la izquierda + bateria a la
 // derecha, como `footerDots` + `drawBatteryFooter` de la OLED.
 void pintaPie() {
   const int yf = 186;                 // fila del pie
@@ -3781,7 +5291,7 @@ void pintaPie() {
 }
 
 // ---------------------------------------------------------------------------
-//  ★★ ICONO DEL PERFIL ACTIVO — cabecera de la escena "Estado" (2026-09-15) ★★
+//  â˜…â˜… ICONO DEL PERFIL ACTIVO â€” cabecera de la escena "Estado" (2026-09-15) â˜…â˜…
 //
 //  QUE PROBLEMA RESUELVE: el operador cambia de perfil (digi / peaton / bici / coche) y eso
 //  cambia el SSID con el que sale al aire, pero en la pantalla no habia NADA que lo dijera:
@@ -3792,7 +5302,7 @@ void pintaPie() {
 //  y0=4), o sea que EMPIEZA EN x=16 y avanza 6*2 = 12 px por caracter. La cabecera ocupa de
 //  y=4 a y=22 (18 px de alto), asi que un icono de 16x16 centrado va de y=5 a y=20.
 //
-//  ★ EL COLOR, QUE NO ES EVIDENTE (leido en el codigo, no supuesto): el ultimo argumento de
+//  â˜… EL COLOR, QUE NO ES EVIDENTE (leido en el codigo, no supuesto): el ultimo argumento de
 //    `px()` es un booleano que significa "negro", NO "pinta":
 //        px(x, y, true)  -> gBuf &= ~bit -> el bit queda a 0 -> NEGRO (tinta)
 //        px(x, y, false) -> gBuf |=  bit -> el bit queda a 1 -> BLANCO (borra)
@@ -3801,7 +5311,7 @@ void pintaPie() {
 //    `pastillaRellena()` usa `false` para RECORTAR las esquinas. Aqui la figura tiene que
 //    quedar en TINTA, igual que el texto, asi que TODO va con `true`.
 //
-//  ★ NADA SE DIBUJA ENCIMA DE NADA: el icono solo se pinta si CABE en el hueco (la cuenta y
+//  â˜… NADA SE DIBUJA ENCIMA DE NADA: el icono solo se pinta si CABE en el hueco (la cuenta y
 //    la comprobacion estan en `pintaEstado()`); con un indicativo largo no se dibuja nada y
 //    la cabecera se queda exactamente como estaba.
 // ---------------------------------------------------------------------------
@@ -3817,7 +5327,7 @@ void pintaFigura16(int x0, int y0, const char *const *filas) {
   }
 }
 
-// ── PERFIL 0 = digi / fijo: ESTRELLA de 5 puntas con una "D" dentro (el simbolo clasico del
+// â”€â”€ PERFIL 0 = digi / fijo: ESTRELLA de 5 puntas con una "D" dentro (el simbolo clasico del
 //    digipeater). La "D" va RECORTADA EN BLANCO sobre la estrella rellena: a 16x16 una "D" de
 //    tinta sobre estrella de contorno deja las dos figuras en hilachas y no se lee ninguna.
 //    OJO: la "D" esta dibujada a mano (5x7, trazos de 1 px) y NO es la letra de `EpdFont5x7`.
@@ -3843,7 +5353,7 @@ const char *const kIconoDigi[16] = {
   "................"    // 15
 };
 
-// ── PERFIL 1 = PEATON: cabeza, cuerpo con los brazos abiertos, y las dos piernas.
+// â”€â”€ PERFIL 1 = PEATON: cabeza, cuerpo con los brazos abiertos, y las dos piernas.
 //                            0123456789012345
 const char *const kIconoPeaton[16] = {
   "................",   // 0
@@ -3864,7 +5374,7 @@ const char *const kIconoPeaton[16] = {
   "..###......###.."    // 15  pies
 };
 
-// ── PERFIL 2 = BICI: las dos ruedas (aros de 7x7) y el cuadro en rombo, con el manillar
+// â”€â”€ PERFIL 2 = BICI: las dos ruedas (aros de 7x7) y el cuadro en rombo, con el manillar
 //    arriba a la derecha y el sillin arriba a la izquierda.
 //                            0123456789012345
 const char *const kIconoBici[16] = {
@@ -3886,7 +5396,7 @@ const char *const kIconoBici[16] = {
   "..###......###.."    // 15  parte de abajo de las dos ruedas
 };
 
-// ── PERFIL 3 = COCHE: silueta de perfil (techo, parabrisas recortado, carroceria) con las
+// â”€â”€ PERFIL 3 = COCHE: silueta de perfil (techo, parabrisas recortado, carroceria) con las
 //    dos ruedas debajo.
 //                            0123456789012345
 const char *const kIconoCoche[16] = {
@@ -3923,14 +5433,14 @@ void iconoPerfil(int x, int y, int perfil) {
 
 // Escena 0: estado general (lo que se ve casi siempre). La cabecera lleva tu indicativo
 // (como la barra de titulo de la OLED).
-// ★ (subida a escala 2) El modo de trabajo YA NO se dibuja en esta escena: a escala 2 no
+// â˜… (subida a escala 2) El modo de trabajo YA NO se dibuja en esta escena: a escala 2 no
 //   cabe en la misma linea que los contadores (ver el comentario de abajo). La cabecera
 //   pinta SOLO el indicativo, asi que en esta escena el modo ya no se ve.
 void pintaEstado() {
   const char *call = callSinSSID();   // solo el indicativo, sin el SSID
   pintaCabecera(call);
 
-  // ★ ICONO DEL PERFIL ACTIVO (2026-09-15): en la cabecera queda un hueco libre entre el
+  // â˜… ICONO DEL PERFIL ACTIVO (2026-09-15): en la cabecera queda un hueco libre entre el
   //   indicativo y la pastilla RX/TX. Ahi se dibuja (DESPUES de la cabecera, que es quien
   //   pinta el indicativo) un icono de 16x16 con el perfil con el que trabaja el nodo.
   //
@@ -3942,7 +5452,7 @@ void pintaEstado() {
   //     - la pastilla RX/TX NO se toca ni se desplaza: si el icono no cabe en el hueco,
   //       simplemente NO se dibuja.
   //
-  //   ★ EL LIMITE DE LA DERECHA NO ES SIEMPRE 154. Leyendo `pintaPillRX()`: la pastilla se
+  //   â˜… EL LIMITE DE LA DERECHA NO ES SIEMPRE 154. Leyendo `pintaPillRX()`: la pastilla se
   //     dimensiona con su texto, `x0 = (EPD_W - 8) - textWidth(txt, 2) - pad*2` = 192 - tw -
   //     16. Con "RX", "TX" y "--" sale x0 = 154 (el valor medido), pero con "MUTE" (nodo
   //     silenciado) el texto es mas largo y sale x0 = 192 - 46 - 16 = 130. Para que el icono
@@ -3963,7 +5473,7 @@ void pintaEstado() {
   char b[40];
   // Contadores de trafico (como la escena Status de la OLED).
   //
-  // ★ SUBIDA A ESCALA 2 (encargo del operador: el tamano mas pequeno se lee mal). A escala 2
+  // â˜… SUBIDA A ESCALA 2 (encargo del operador: el tamano mas pequeno se lee mal). A escala 2
   //   el paso por caracter es 6*2 = 12 px, o sea 16 caracteres como mucho en 200 px. El texto
   //   anterior ("Repetidor   RX 12 TX 3 DG 0") son ~30 caracteres: ni de lejos. Se quita el
   //   modo de la linea y los contadores van abreviados con `contadorCorto()` (3 caracteres
@@ -3991,7 +5501,7 @@ void pintaEstado() {
     drawTextCenter(y, b, 2); y += 20;
   }
 
-  // ★ LOS DOS SALTOS DEL SEPARADOR, ESTRECHADOS (subida a escala 2). No son saltos de linea
+  // â˜… LOS DOS SALTOS DEL SEPARADOR, ESTRECHADOS (subida a escala 2). No son saltos de linea
   //   de texto (esos van a 20, como pide el encargo): son el aire de arriba y de abajo de la
   //   raya. Habia 6 + 8 = 14 px y ahora 2 + 4 = 6, o sea 8 px menos. Hacen falta porque al
   //   subir a escala 2 cada linea ocupa 14 px (antes 7) y la ultima linea (la bateria) se
@@ -4013,7 +5523,7 @@ void pintaEstado() {
   if (b[0]) drawTextCenter(y, b, 2);
   y += 20;
 
-  // Radio-link quality (RSSI/SNR) de la ultima trama recibida: un dato que la OLED enseñaba
+  // Radio-link quality (RSSI/SNR) de la ultima trama recibida: un dato que la OLED enseÃ±aba
   // y que aqui faltaba.
   snprintf(b, sizeof(b), "%.0fdBm  %.1fdB", (double)radioLastRssi(), (double)radioLastSnr());
   drawTextCenter(y, b, 2); y += 20;
@@ -4029,7 +5539,7 @@ void pintaRadio() {
   pintaCabecera("Radio");
   char b[40];
   int y = 34;
-  // ★ EL MODO DE TRABAJO SE MUESTRA AQUI (2026-09-15, decision del operador).
+  // â˜… EL MODO DE TRABAJO SE MUESTRA AQUI (2026-09-15, decision del operador).
   //   En la escena de Estado NO cabe: al subir el texto a escala 2 (por la vision
   //   deficiente), el nombre del modo y los contadores no entran juntos en la misma linea
   //   -- la pantalla son 200 px y a escala 2 el paso es 12 px por caracter. El operador
@@ -4089,7 +5599,7 @@ void pintaSistema() {
 // Escena 4: estaciones oidas (la OLED tenia "ESTACIONES": indicativo + distancia y rumbo
 // cuando hay fijacion GPS, o edad si no).
 //
-// ★★ EL MISMO FALLO DE ANCHO ESTABA AQUI (revisado y arreglado 2026-09-15) ★★
+// â˜…â˜… EL MISMO FALLO DE ANCHO ESTABA AQUI (revisado y arreglado 2026-09-15) â˜…â˜…
 //   QUE PASABA: `"%-9s %s"` NO recortaba el indicativo (9 es un ancho MINIMO), asi que un
 //   `N0CALL-3` salia entero; el recorte a 6 caracteres era solo de "Ultimos RX". Pero el
 //   ancho estaba calculado a ojo y el peor caso REAL no cabia: `N0CALL-15` (9) + 1 espacio +
@@ -4142,13 +5652,13 @@ void pintaEstaciones() {
   }
 }
 
-// Escena 5: ULTIMOS RX — lista de lo que se ha recibido (la OLED tenia "ULTIMOS RX").
+// Escena 5: ULTIMOS RX â€” lista de lo que se ha recibido (la OLED tenia "ULTIMOS RX").
 //
-// ★ ESCALA 1 Y SALTO DE 20 px (2026-09-15, peticion del operador): antes iba a ESCALA 2
+// â˜… ESCALA 1 Y SALTO DE 20 px (2026-09-15, peticion del operador): antes iba a ESCALA 2
 //   (letra de 14 px de alto) con salto 20. Ahora la letra es de 7 px (escala 1) y se MANTIENE
 //   el salto de 20, o sea que las filas quedan mas aireadas y se leen de un vistazo.
 //
-// ★★ EL INDICATIVO YA NO SE CORTA (arreglado 2026-09-15) ★★
+// â˜…â˜… EL INDICATIVO YA NO SE CORTA (arreglado 2026-09-15) â˜…â˜…
 //   QUE PASABA: la linea se montaba con `"%.6s  %.0f/%.0f"`, y ese `%.6s` RECORTA el
 //   indicativo a 6 caracteres. Un `N0CALL-3` (7) perdia el SSID ENTERO y en la pantalla se
 //   leia "N0CALL-" y nada mas; un `N0CALL-15` (9) perdia mas todavia. El operador lo vio
@@ -4200,7 +5710,7 @@ void pintaUltimosRX() {
   }
 }
 
-// Escena 6: ULTIMOS TX — lista de lo que se ha transmitido (la OLED tenia "ULTIMOS TX").
+// Escena 6: ULTIMOS TX â€” lista de lo que se ha transmitido (la OLED tenia "ULTIMOS TX").
 void pintaUltimosTX() {
   pintaCabecera("Ultimos TX");
   if (gTxLogN == 0) { drawTextCenter(90, "Nada transmitido", 2); return; }
@@ -4214,7 +5724,7 @@ void pintaUltimosTX() {
   }
 }
 
-// Escena 7: GPS / TRACKER — la posicion en grande (la OLED tenia "GPS FIX").
+// Escena 7: GPS / TRACKER â€” la posicion en grande (la OLED tenia "GPS FIX").
 void pintaGPS() {
   char t[24];
   const GpsData &g = gpsGet();
@@ -4227,7 +5737,7 @@ void pintaGPS() {
     drawTextCenter(y, b, 2); y += 20;
     snprintf(b, sizeof(b), "%.5f", g.lon);
     drawTextCenter(y, b, 2); y += 20;
-    // ★ PARTIDO EN DOS LINEAS A ESCALA 2 (encargo del operador: el tamano mas pequeno se lee
+    // â˜… PARTIDO EN DOS LINEAS A ESCALA 2 (encargo del operador: el tamano mas pequeno se lee
     //   mal). El texto anterior "1234m  45km/h  9sat" son 19 caracteres y a escala 2 el paso
     //   por caracter es 12 px: 16 caracteres son 190 px, los 200 px de la pantalla. Una linea
     //   de 19 caracteres (226 px) se saldria. Se parte como pidio el operador: primero
@@ -4236,19 +5746,19 @@ void pintaGPS() {
     drawTextCenter(y, b, 2); y += 20;
     snprintf(b, sizeof(b), "Alt %.0fm", (double)(g.altValid ? g.altM : 0.0));
     drawTextCenter(y, b, 2); y += 20;
-    // ★ Y aqui lo mismo: "rumbo 359  HDOP 1.2" (19 caracteres) se parte en dos lineas.
+    // â˜… Y aqui lo mismo: "rumbo 359  HDOP 1.2" (19 caracteres) se parte en dos lineas.
     snprintf(b, sizeof(b), "Rumbo %.0f", (double)g.courseDeg);
     drawTextCenter(y, b, 2); y += 20;
     snprintf(b, sizeof(b), "HDOP %.1f", (double)g.hdop);
     drawTextCenter(y, b, 2);
   } else {
-    drawTextCenter(y, "Buscando posicion", 2); y += 22;
+    drawTextCenter(y, "Buscando posic.", 2); y += 22;
     snprintf(b, sizeof(b), "%u sat a la vista", (unsigned)g.satsInView);
     drawTextCenter(y, b, 2);
   }
 }
 
-// ★ ¿Este aviso es de TRAFICO (RX / REPITE / TX)? Los tres empiezan por una letra que
+// â˜… Â¿Este aviso es de TRAFICO (RX / REPITE / TX)? Los tres empiezan por una letra que
 //   ningun otro texto del firmware usa al principio, asi que la comprobacion es exacta:
 //     displayNoteRx   -> "RX <indicativo>"
 //     displayNoteDigi -> "REPITE <indicativo>"
@@ -4273,8 +5783,8 @@ static uint32_t duracionAviso() { return avisoDeTrafico(gLinea1) ? kAvisoMs : kL
 //  sin esto el operador se quedaria mirando una lista quieta (que en tinta parece
 //  colgada) durante los minutos que puede tardar el GPS.
 //
-//  ★★ LO QUE PIDE EL OPERADOR CON ESTA PANTALLA (sus palabras) ★★
-//  "¿hay una ventana de estado mientras se realiza la tarea? Pues que muestre como
+//  â˜…â˜… LO QUE PIDE EL OPERADOR CON ESTA PANTALLA (sus palabras) â˜…â˜…
+//  "Â¿hay una ventana de estado mientras se realiza la tarea? Pues que muestre como
 //  va y en que parte del proceso, para que el usuario este tranquilo."
 //  Por eso NINGUN estado se queda sin decir algo que CAMBIE:
 //    - BUSCANDO: "Buscando GPS..." + LOS SATELITES QUE VE AHORA (que es lo que
@@ -4286,7 +5796,7 @@ static uint32_t duracionAviso() { return avisoDeTrafico(gLinea1) ? kAvisoMs : kL
 //  Y en todos: "Toca un boton para salir" / "para cancelar". La sesion NO se cierra
 //  sola por tiempo: la fijacion tarda lo que tarde (decision del operador).
 //
-//  ★ EL CONTADOR ES EL DEL RASTREADOR (trackerSetCoordsNeed), no un numero escrito
+//  â˜… EL CONTADOR ES EL DEL RASTREADOR (trackerSetCoordsNeed), no un numero escrito
 //    aqui: si alli se cambia el numero de muestras, la pantalla lo dice sola.
 // ---------------------------------------------------------------------------
 void pintaSesionCoords() {
@@ -4297,7 +5807,7 @@ void pintaSesionCoords() {
 
   if (gCoordsPantalla == COORDS_BUSCANDO || (gCoordsPantalla == COORDS_ASENTANDO && !g.fix)) {
     drawTextCenter(48, "Buscando GPS...", 2);
-    // ★ LOS SATELITES A LA VISTA, EN GRANDE Y SIEMPRE: es el unico numero que se
+    // â˜… LOS SATELITES A LA VISTA, EN GRANDE Y SIEMPRE: es el unico numero que se
     //   mueve mientras no hay fijacion, y es lo que le dice al operador que el
     //   receptor esta oyendo el cielo y que solo falta esperar. Sin esto, una
     //   pantalla quieta durante minutos parece un cuelgue.
@@ -4345,14 +5855,14 @@ void pintaSesionCoords() {
   }
 }
 
-// ★ Dibuja en `gBuf` lo que toque AHORA (la escena del carrusel, con el aviso reciente
+// â˜… Dibuja en `gBuf` lo que toque AHORA (la escena del carrusel, con el aviso reciente
 //   ENCIMA si lo hay) y deja `gDirty` puesto. Es el UNICO sitio donde se decide que se ve.
 //   Lo usan `displayRefresh()` (el bucle normal) y la prueba del carrusel del comando
 //   `epdparcial` (herramienta de taller): asi lo que se prueba es exactamente lo mismo que
 //   se vera luego en el carrusel automatico del Paso 2, y no una copia que puede divergir.
 void dibujaEscena() {
   clearBuf(true);
-  // ★★ LA SESION "FIJAR COORDS" MANDA SOBRE TODO (2026-09-15) ★★
+  // â˜…â˜… LA SESION "FIJAR COORDS" MANDA SOBRE TODO (2026-09-15) â˜…â˜…
   //   Va ANTES del menu a proposito: la captura se lanza desde el menu y dura
   //   minutos, asi que mientras esta en marcha lo que hay que ver es su progreso,
   //   no la lista (que en tinta parece colgada). Ver pintaSesionCoords().
@@ -4362,15 +5872,36 @@ void dibujaEscena() {
     gDirty = true;
     return;
   }
-  // ★ Si el menú esta abierto, se pinta el MENU en lugar del carrusel (2026-09-15).
+  // â˜… Si el menÃº esta abierto, se pinta el MENU en lugar del carrusel (2026-09-15).
+#ifdef TRACKS_DISPONIBLE
+  // â˜…â˜… Y SI ESTAN ABIERTAS LAS PANTALLAS DE TRACKS, SE PINTAN ELLAS (2026-09-22) â˜…â˜…
+  //   Van antes que el menu porque lo SUSTITUYEN (cuando se abren, `gMenuOn` se pone a false).
+  //   Mismo patron que el menu, incluido el auto-cierre: si al pintar resultara que ya se han
+  //   cerrado solas por el timeout, se sigue hacia abajo y se pinta el carrusel en vez de
+  //   dejar el panel en blanco.
+  if (pantallaTracksActiva()) {
+    // â˜…â˜… LA PANTALLA DE GUIADO **NO** SE CIERRA SOLA (2026-09-22) â˜…â˜…
+    //   El auto-cierre de 15 s es una regla de MENU (para que no se quede abierto sin querer),
+    //   y para un menu esta bien. Pero la pantalla de guiado es una pantalla de TRABAJO que se
+    //   mira de reojo mientras se anda: si se cerrara a los 15 s, el usuario tendria que dar
+    //   CUATRO gestos (largo, navegar, corto, corto) para volver a ver el rumbo, cada 15 s. Y lo
+    //   peor: el guiado NO se para al cerrarse, asi que el aparato seguiria guiando sin
+    //   ensenarlo. Lo cazo una revision independiente.
+    //   Se sale cuando el usuario quiere (pulsacion larga), no por un reloj.
+    if (gTrkPant == TRK_PANT_GUIA) {
+      pantallaTracksPinta(); gDirty = true; return;
+    }
+    if ((uint32_t)(millis() - gTrkUltActMs) > 15000) { pantallaTracksCierra(); }
+    else { pantallaTracksPinta(); gDirty = true; return; }
+  }
+#endif
   if (menuIsOpen()) {
-    menuPinta();
-    // ARREGLO del "pantalla en blanco" (2026-09-15): menuPinta() puede AUTO-CERRAR el menu
+    menuPinta();    // ARREGLO del "pantalla en blanco" (2026-09-15): menuPinta() puede AUTO-CERRAR el menu
     // por el timeout de 15 s y dejar gBuf en blanco. Si tras pintar el menu ya NO esta
     // abierto, se CONTINUA abajo y se dibuja la escena del carrusel, en vez de devolver.
     if (menuIsOpen()) { gDirty = true; return; }
   }
-  // ★★ LA ESCENA SE PINTA SIEMPRE; EL AVISO VA ENCIMA (2026-09-15) ★★
+  // â˜…â˜… LA ESCENA SE PINTA SIEMPRE; EL AVISO VA ENCIMA (2026-09-15) â˜…â˜…
   //   Antes esto era un "if (aviso) ... else { escena }": con un aviso en pantalla la escena
   //   NO se dibujaba, asi que el primer refresco dejaba el panel con el aviso solo y hacia
   //   falta un SEGUNDO refresco (al caducar) para volver a ver la escena. Pintando la escena
@@ -4387,16 +5918,16 @@ void dibujaEscena() {
     default: pintaEstado(); break;   // 0 = Estado (la que se ve casi siempre)
   }
   // El pie (PIE DE LA OLED): rectangulitos del carrusel + bateria, SIEMPRE debajo
-  // del contenido y por encima de la huella, para que acompañe a todas las escenas.
+  // del contenido y por encima de la huella, para que acompaÃ±e a todas las escenas.
   pintaPie();
   // El aviso, ENCIMA de todo y sin tapar el pie (que es donde vive la bateria).
   pintaAviso();
   gDirty = true;
 }
 
-// Voltaje de bateria que se ENSEÑA (en milivoltios, redondeado a 0,01 V).
+// Voltaje de bateria que se ENSEÃ‘A (en milivoltios, redondeado a 0,01 V).
 //
-// ★★ POR QUE NO SE USA `powerReadMv()` AQUI (2026-09-15) ★★
+// â˜…â˜… POR QUE NO SE USA `powerReadMv()` AQUI (2026-09-15) â˜…â˜…
 // `powerReadMv()` lee el ADC CADA VEZ que se llama y le pasa un filtro suavizador. En esta
 // unidad el divisor de la bateria NO esta poblado (ya estaba documentado: `bat` contesta
 // 0,00 V aunque el pin ya es el correcto, P0.04), asi que el convertidor lee RUIDO que cambia
@@ -4415,7 +5946,7 @@ uint16_t bateriaMv() {
 }
 
 // ===========================================================================
-//  ★★ PASO 2: "NO REPINTAR SI NO HA CAMBIADO NADA" (2026-09-15) ★★
+//  â˜…â˜… PASO 2: "NO REPINTAR SI NO HA CAMBIADO NADA" (2026-09-15) â˜…â˜…
 //
 //  POR QUE EXISTE ESTO: el firmware repintaba cada 5 s por reloj.
 //  cambiara algo o no. Medido en hardware con el carrusel puesto: **19 repintados en 50
@@ -4423,21 +5954,21 @@ uint16_t bateriaMv() {
 //  bateria, y el propio HANDOVER avisa de que el parcial ensucia si se abusa de el.
 //
 //  COMO SE ARREGLA: antes de pintar se calcula una **huella** de TODO lo que se va a ver en
-//  la pantalla que toca —la escena, el modo, el GPS, los sensores, la bateria, los
-//  contadores de radio y el aviso de "ultimo"— y se compara con la huella de lo ultimo
+//  la pantalla que toca â€”la escena, el modo, el GPS, los sensores, la bateria, los
+//  contadores de radio y el aviso de "ultimo"â€” y se compara con la huella de lo ultimo
 //  pintado. Si son iguales, **no se manda nada al panel**.
 //
-//  ★ DOS COSAS QUE HAY QUE ENTENDER DE ESTA HUELLA, o se rompe sola:
+//  â˜… DOS COSAS QUE HAY QUE ENTENDER DE ESTA HUELLA, o se rompe sola:
 //    1. Se construye con los MISMOS valores y los MISMOS redondeos que usa el dibujo
 //       (coordenadas a 5 decimales, velocidad a 0 decimales, bateria a 2...). Si aqui se
-//       redondea distinto que alli, o se repinta de mas o —peor— no se repinta cuando la
+//       redondea distinto que alli, o se repinta de mas o â€”peorâ€” no se repinta cuando la
 //       pantalla si ha cambiado.
 //    2. Los avisos ("hace Ns") NO entran con su reloj a proposito: entrarian cambiando cada
 //       segundo y volveriamos al repintado continuo. El aviso caduca solo (a los 1,5 s si es
 //       de trafico, a los 8 s si no: ver `duracionAviso()`) y ese cambio SI se detecta porque
 //       la linea pasa a estar vacia. Ese es el segundo y ULTIMO refresco de un aviso: no hay
 //       ningun estado intermedio que obligue a un tercero.
-//    3. ★ EL AVISO NO CAMBIA LO QUE HAY DEBAJO (2026-09-15): `dibujaEscena()` pinta SIEMPRE
+//    3. â˜… EL AVISO NO CAMBIA LO QUE HAY DEBAJO (2026-09-15): `dibujaEscena()` pinta SIEMPRE
 //       la escena y el aviso encima. Si algun dia se volviera a "con aviso, no pintes la
 //       escena", volveria el doble paso y esta huella no lo detectaria (la escena no entra en
 //       la huella cuando hay aviso: solo entra el aviso).
@@ -4482,7 +6013,7 @@ uint64_t huellaContenido() {
   huellaAnade(h, &vel, sizeof(vel));
   huellaAnade(h, &sat, sizeof(sat));
 
-  // ★ `satVista` (los satelites "a la vista", aun sin fijacion) NO entra en la huella.
+  // â˜… `satVista` (los satelites "a la vista", aun sin fijacion) NO entra en la huella.
   //   Medido con el instrumento `epdhuella`: ese numero baila de 5 a 11 en pocos segundos y
   //   era el que hacia que la pantalla se repintara sin parar aunque la linea que se dibuja
   //   apenas cambie. La posicion y la velocidad, que si importan, siguen entrando. La
@@ -4504,7 +6035,7 @@ uint64_t huellaContenido() {
   huellaAnade(h, &gTx, sizeof(gTx));
   huellaAnade(h, &gDg, sizeof(gDg));
 
-  // ★ ESTADO DE "RECIEN TRANSMITIDO" + radio lista/mute (ARREGLO A1 de la auditoria,
+  // â˜… ESTADO DE "RECIEN TRANSMITIDO" + radio lista/mute (ARREGLO A1 de la auditoria,
   //   2026-09-15): la pastilla RX/TX y el aviso de TX se deciden con
   //   `radioLastTxMs()<3000` y `txDisabled`/`radioReady()`, pero esos datos NO entraban en
   //   la huella, asi que tras una emision la pastilla negra "TX" se quedaba CONGELADA hasta
@@ -4518,15 +6049,15 @@ uint64_t huellaContenido() {
   const uint8_t radioListo = radioReady() ? 1u : 0u;
   huellaAnade(h, &radioListo, sizeof(radioListo));
 
-  // ★ PERFIL ACTIVO (2026-09-15): la escena Estado dibuja un icono que depende de
+  // â˜… PERFIL ACTIVO (2026-09-15): la escena Estado dibuja un icono que depende de
   //   `smartBeaconPreset`. Elegirlo desde el MENU ya fuerza repintado (`gDirty`), pero se
   //   puede cambiar tambien desde el configurador web o por CLI, y ahi nadie avisa: el panel
-  //   es bistable, asi que sin meterlo en la huella el icono se quedaria enseñando el perfil
+  //   es bistable, asi que sin meterlo en la huella el icono se quedaria enseÃ±ando el perfil
   //   VIEJO hasta el repintado de refresco de 60 s. Es el mismo fallo --y el mismo arreglo--
   //   que el "arreglo A1" de la pastilla TX de arriba.
   const uint8_t perfilIcono = (uint8_t)(gCfg ? gCfg->smartBeaconPreset : 0);
   huellaAnade(h, &perfilIcono, sizeof(perfilIcono));
-  // ★ ICONO DEL MAPA DEL PERFIL (2026-09-15): el par (tabla, codigo) de cada perfil
+  // â˜… ICONO DEL MAPA DEL PERFIL (2026-09-15): el par (tabla, codigo) de cada perfil
   //   se puede cambiar desde el MENU, desde el configurador web o con `set`, y el
   //   icono de la ESCENA tambien es un dato del perfil: si se cambia por web, sin
   //   esto la pantalla se quedaria con el dibujo viejo hasta el repintado de 60 s.
@@ -4536,7 +6067,7 @@ uint64_t huellaContenido() {
       huellaAnade(h, gCfg->profileSymbol[i], 1);
     }
   }
-  // ★ SESION "FIJAR COORDS" (2026-09-15): la pantalla de la captura solo puede
+  // â˜… SESION "FIJAR COORDS" (2026-09-15): la pantalla de la captura solo puede
   //   cambiar en unos pocos numeros (fase, muestras hechas, muestras que hacen
   //   falta y la posicion guardada). Con ellos en la huella, el progreso se
   //   repinta SOLO cuando cambia de escalon y no en cada vuelta del bucle.
@@ -4553,7 +6084,7 @@ uint64_t huellaContenido() {
   return h;
 }
 
-// ★★ INSTRUMENTO: ¿QUE DATO DE LA HUELLA ESTA CAMBIANDO? (2026-09-15) ★★
+// â˜…â˜… INSTRUMENTO: Â¿QUE DATO DE LA HUELLA ESTA CAMBIANDO? (2026-09-15) â˜…â˜…
 //
 // Cuando el firmware repinta "sin motivo", el problema esta en un dato que entra en la huella
 // y que cambia solo. Adivinar cual cuesta tardes; medirlo, dos comandos. Esto saca la huella
@@ -4585,7 +6116,7 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
   if (!gReady) return;
   gRx = rxCount; gTx = txCount; gDg = digiCount; gSens = r;
 
-  // ★★ SESION "FIJAR COORDS": SEGUIMIENTO DESDE LA PANTALLA (2026-09-15) ★★
+  // â˜…â˜… SESION "FIJAR COORDS": SEGUIMIENTO DESDE LA PANTALLA (2026-09-15) â˜…â˜…
   // El rastreador es quien manda sobre el GPS (trackerSetCoordsStart/Tick, ver
   // tracker.cpp); aqui solo se MIRA en que punto esta y se ensena. El aviso por
   // USB ya lo da el rastreador ("{\"setcoords\":...}"), asi que aqui no se repite.
@@ -4593,7 +6124,7 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
   //   TRK_COORDS_ASENTANDO -> pantalla "Asentando... n/N" con barra
   //   TRK_COORDS_GUARDADO  -> pantalla con la posicion guardada
   //   TRK_COORDS_ERROR     -> pantalla de error al guardar
-  // ★ SOLO SE DECIDE REPINTAR POR ESCALONES (0, 25, 50, 75, 100 %): cada refresco
+  // â˜… SOLO SE DECIDE REPINTAR POR ESCALONES (0, 25, 50, 75, 100 %): cada refresco
   //   de este panel cuesta 1,5 s y lo manda la HUELLA, que es la que compara el
   //   texto que se vera. Con el numero de muestras exacto se repintaria en cada
   //   muestra (~20 refrescos, 30 s de panel pintando) para ver cambiar un digito.
@@ -4635,13 +6166,13 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
     }
   }
 
-  // ★ TOQUE EN LA PANTALLA DE LA SESION (2026-09-15).
+  // â˜… TOQUE EN LA PANTALLA DE LA SESION (2026-09-15).
   //   - CON LA CAPTURA EN MARCHA: el toque CANCELA. Es la condicion que puso el
   //     operador al quitar el tope de tiempo ("que el usuario pueda salir de ahi
   //     con un boton"): la sesion espera lo que haga falta, asi que la salida la
   //     decide el, no un reloj. trackerSetCoordsCancel() apaga el GPS si lo
   //     encendio la sesion y lo deja como estaba si ya estaba encendido.
-  //     ★ El guardia de kDebounceToqueMs compara con el momento en que se LANZO la
+  //     â˜… El guardia de kDebounceToqueMs compara con el momento en que se LANZO la
   //     sesion (no solo con el ultimo toque): asi el toque con el que el operador
   //     acaba de elegir "Fijar coords" en el menu no cancela lo que acaba de
   //     arrancar.
@@ -4662,7 +6193,7 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
     }
   }
 
-  // ★★ CAMBIO DE ROTACION EN CALIENTE (2026-09-14) ★★
+  // â˜…â˜… CAMBIO DE ROTACION EN CALIENTE (2026-09-14) â˜…â˜…
   // Si el usuario guarda `epdRotation` (configurador web, `set epdRotation N`), la
   // configuracion cambia y aqui se aplica SIN REINICIAR: se repinta con la orientacion
   // nueva. La variable se lee de la config, no de una constante, y se compara con la
@@ -4679,7 +6210,7 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
     }
   }
 
-  // ★★ PASO 2: EL CARRUSEL AUTOMATICO (2026-09-15) ★★
+  // â˜…â˜… PASO 2: EL CARRUSEL AUTOMATICO (2026-09-15) â˜…â˜…
   // El ajuste `sceneAutoAdvance` (el mismo de la OLED) manda aqui de verdad. La pausa tras
   // una pulsacion del boton se respeta siempre: si el operador acaba de elegir pantalla, el
   // carrusel no se la cambia.
@@ -4698,7 +6229,7 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
     }
   }
 
-  // El aviso caduca solo: asi la pantalla vuelve a la escena normal. ★ UN SOLO PASO
+  // El aviso caduca solo: asi la pantalla vuelve a la escena normal. â˜… UN SOLO PASO
   // (2026-09-15): los avisos de TRAFICO (RX / REPITE / TX) duran `kAvisoMs` (1,5 s) y los
   // demas `kLineaMs` (8 s). Este es el UNICO sitio donde expira un aviso: la banda "TX" que
   // tenia su propio reloj de 3000 ms ya no existe (ver pintaAviso).
@@ -4708,7 +6239,7 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
     gDirty = true;
   }
 
-  // ★★ PASO 2: SOLO SE REPINTA SI LO QUE SE VA A VER ES DISTINTO (2026-09-15) ★★
+  // â˜…â˜… PASO 2: SOLO SE REPINTA SI LO QUE SE VA A VER ES DISTINTO (2026-09-15) â˜…â˜…
   // Antes esto era "repintar cada 5 s pase lo que pase", y con el carrusel se midieron 19
   // repintados en 50 s (16 sin motivo). Ahora manda la huella del contenido; el reloj solo
   // fuerza un repintado de refresco cada `kRepintadoMaxMs`, por si algo se escapa.
@@ -4717,17 +6248,46 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
   const bool cambioElContenido = (!gHuellaValida || huella != gHuellaPintada);
   const bool tocaPorTiempo = (ahora - gUltimoPintado) > kRepintadoMaxMs;
 
-  // ★ TOQUE RAPIDO (2026-09-15): si acabas de TOCAR EL TACTIL hace menos de
+  // â˜… TOQUE RAPIDO (2026-09-15): si acabas de TOCAR EL TACTIL hace menos de
   //   kAgrupaToquesMs, se APLAZA el repintado (se mantiene gDirty sin pintar). Asi, si
   //   tocas varias veces seguidas en el carrusel o el menu, la posicion LOGICA avanza al
   //   instante en cada toque y solo se pinta UNA vez cuando dejas de tocar, mostrando la
   //   posicion final.
-  //   ★ T-ECHO PROJECT BUTTER (2026-09-15): esto SOLO cuenta para el tactil capacitivo
+  //   â˜… T-ECHO PROJECT BUTTER (2026-09-15): esto SOLO cuenta para el tactil capacitivo
   //     (`gUltimoToqueAgrupaMs`). El boton fisico ya no lo escribe: su toque corto sale
   //     600 ms despues de soltar (ventana del doble) y dos cortos nunca caen dentro de
   //     estos 400 ms, asi que lo unico que hacia era retrasar 400 ms CADA cambio de
   //     diapositiva pedido con el boton. Ver la nota de kAgrupaToquesMs.
-  const bool toqueReciente = (ahora - gUltimoToqueAgrupaMs) < kAgrupaToquesMs;
+  // â˜…â˜… EL APLAZAMIENTO, MEDIDO DESDE QUE DEJASTE DE TOCAR (b82) â˜…â˜…
+  //
+  // HISTORIA, porque aqui me he equivocado DOS veces y las dos estan documentadas:
+  //   (1) REGLA ORIGINAL: `if (toqueReciente) return;` con un reloj que empezaba AL PRIMER
+  //       TOQUE. Un toque suelto pagaba los 400 ms enteros ("desde que pulso hasta que lo veo
+  //       dibujado pasa un poquito de tiempo", dijo el operador). Funcionaba, pero lento.
+  //   (2) b76, con un tope de 150 ms desde el primer toque: empezaba a pintar ANTES de que el
+  //       operador acabara -> pintaba estados INTERMEDIOS y, con el bucle ocupado ~700 ms
+  //       pintando, los toques siguientes se ejecutaban tarde: "no guarda si pulso varias veces".
+  //   (3) b77/b78, "por estado": la pantalla miraba/vaciaba LA COLA DE ACCIONES del boton.
+  //       Esa cola no es un aviso de trabajo: es lo que el bucle cobra y ejecuta. Quitarsela =
+  //       el toque se pierde: "no funciona el boton capacitivo".
+  //
+  // â˜…â˜… LA REGLA BUENA (esta): se aplaza mientras el ULTIMO TOQUE CONFIRMADO sea reciente. El
+  //    sello lo pone el boton (`buttonUltimoToqueConfirmado()`) y la pantalla SOLO LO LEE: no
+  //    vacia nada, no se lleva ninguna accion por delante. Es la pieza que faltaba en (1), que
+  //    medÃ­a desde que EMPEZABAS a tocar en vez de desde que acababas.
+  //
+  //    RESULTADO: un toque suelto se pinta kAplazoTrasToqueMs despues de soltar (150 ms), en
+  //    vez de 400 ms despues de empezar. Y una rafaga sigue pagando UN solo repintado, porque
+  //    cada toque nuevo renueva el sello. Ademas NUNCA pinta un estado intermedio: si has
+  //    vuelto a tocar dentro de la ventana, el sello es reciente y se sigue esperando.
+  //
+  //    â˜… `kAplazoTrasToqueMs` tiene que ser MAYOR que el bloqueo del tactil (120 ms en
+  //      button.cpp) para que una rafaga no se cuele entre dos toques. 150 lo cumple.
+  constexpr uint32_t kAplazoTrasToqueMs = 150;
+  const uint32_t ultimoToque = buttonUltimoToqueConfirmado();
+  const bool toqueReciente =
+      (ultimoToque != 0) && ((uint32_t)(ahora - ultimoToque) < kAplazoTrasToqueMs);
+
   if (!gDirty && !cambioElContenido && !tocaPorTiempo) return;
   if (toqueReciente && !gMenuEditing && gDirty) return;   // espera a que dejes de tocar
 
@@ -4737,7 +6297,7 @@ void displayRefresh(const DigiConfig &cfg, uint32_t rxCount, uint32_t txCount,
   gDirty = false;
   gRotacionAplicada = gRotacion;   // queda constancia de con cual se ha pintado
 
-  // ★★ OJO CON EL ORDEN, QUE AQUI SE COLO UN FALLO (2026-09-15) ★★
+  // â˜…â˜… OJO CON EL ORDEN, QUE AQUI SE COLO UN FALLO (2026-09-15) â˜…â˜…
   // `dibujaEscena()` dibuja en memoria y deja puesto `gDirty` ("hay algo que mandar").
   // `epdFlush()` es quien mira ese aviso y pinta de verdad. La version anterior de este
   // bloque borraba `gDirty` DESPUES de dibujar y ANTES de llamar a `epdFlush()`, asi que

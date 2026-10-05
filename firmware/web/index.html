@@ -401,6 +401,49 @@ dialog .row{justify-content:flex-end}
         <p class="inertnote" id="mapWarn" style="display:none" data-i18n="map_blocked">Las fotos del terreno no se han podido descargar (el servidor de mapas no las da a una página abierta como fichero). La ruta se ve igual. Para tener el mapa con fotos, sirve el configurador en local: powershell -File tools\sirve_web.ps1 y abre http://localhost:8000/web/ . También puedes quitar las fotos del todo con «Sin fotos (ahorra datos)».</p>
       </div>
     </section>
+    <!-- ================= GUIADO POR TRACKS (2026-09-22) =================
+         Cargar rutas (GPX de WikiLoc) en las 5 ranuras del nodo, para que luego te guie por
+         ellas. El tope de puntos por ranura lo dice el NODO al preguntarle (no esta clavado
+         aqui): si el dia de manana cambia, esta pantalla se entera sola. -->
+    <section class="panel" id="panel-guide">
+      <div class="card">
+        <h2 data-i18n="guide_title">Tracks para guiarme</h2>
+        <p class="hint" data-i18n="guide_hint">Carga una ruta (un GPX de WikiLoc) y el nodo te guía por ella: brújula, desviación y lo que te falta. Caben 5 rutas, y cada una hasta 2040 puntos: si el GPX trae más, se simplifica solo aquí antes de mandarlo.</p>
+
+        <div class="row">
+          <label class="lbl" data-i18n="guide_pick">1. Elige el fichero GPX</label>
+          <input type="file" id="guiaFile" accept=".gpx,application/gpx+xml,text/xml">
+        </div>
+        <p class="hint" id="guiaFileInfo" data-i18n="guide_file">Ningún fichero</p>
+        <p class="hint" id="guiaPuntosInfo"></p>
+
+        <div class="row">
+          <label class="lbl" data-i18n="guide_simpl">2. Simplificar a</label>
+          <input type="number" id="guiaTope" value="2040" min="10" max="2040" step="10">
+          <span data-i18n="guide_points">puntos</span>
+        </div>
+
+        <div class="row">
+          <label class="lbl" data-i18n="guide_slot">3. Ranura de destino</label>
+          <select id="guiaSlot">
+            <option value="0">1</option><option value="1">2</option><option value="2">3</option>
+            <option value="3">4</option><option value="4">5</option>
+          </select>
+          <button id="guiaSend" class="primary" data-i18n="guide_send">Mandar al nodo</button>
+          <button id="guiaErase" data-i18n="guide_erase">Borrar ranura</button>
+        </div>
+        <p class="hint" id="guiaProg"></p>
+      </div>
+
+      <div class="card">
+        <h2 data-i18n="guide_slots">Ranuras</h2>
+        <div class="row">
+          <button id="guiaRead" data-i18n="guide_read">Leer las ranuras del nodo</button>
+        </div>
+        <table class="status" id="guiaTabla"><tr><td data-i18n="no_data">Sin datos</td><td></td></tr></table>
+        <p class="hint" id="guiaVivo"></p>
+      </div>
+    </section>
     <section class="panel" id="panel-actions">
       <div class="card">
         <h2 data-i18n="actions">Acciones</h2>
@@ -725,6 +768,24 @@ const I18N = {
     obj_send:"Enviar objeto", obj_kill:"Borrar objeto", obj_name_ph:"NOMBRE", obj_cmt_ph:"Comentario",
     obj_empty:"Sin objetos enviados en esta sesión.",
     obj_sent:"Objeto enviado: ", obj_killed:"Objeto borrado: ", obj_need:"Rellena el nombre y las coordenadas.",
+    /* ===== GUIADO POR TRACKS (2026-09-22) =====
+       OJO con el tope: el firmware guarda 2040 puntos por ranura y NO recorta en silencio: si
+       mandas mas, RECHAZA el track con el motivo. Por eso el aviso del tope esta a la vista. */
+    guide:"Guiado", guide_title:"Tracks para guiarme",
+    guide_hint:"Carga una ruta (un GPX de WikiLoc) y el nodo te guia por ella: brujula, desviacion y lo que te falta. Caben 5 rutas, y cada una hasta 2040 puntos: si el GPX trae mas, se simplifica solo aqui antes de mandarlo.",
+    guide_pick:"1. Elige el fichero GPX", guide_file:"Ningun fichero",
+    guide_simpl:"2. Simplificar a", guide_points:"puntos",
+    guide_points_now:"El GPX trae", guide_points_seg:"puntos; simplificado quedaria en",
+    guide_slot:"3. Ranura de destino", guide_send:"Mandar al nodo",
+    guide_sending:"Mandando", guide_of:"de", guide_chunks:"trozos",
+    guide_done:"Track guardado en la ranura", guide_read:"Leer las ranuras del nodo",
+    guide_slots:"Ranuras", guide_empty:"vacia", guide_when:"grabado el",
+    guide_err_nofix:"Conecta primero con el nodo (pestana Estado).",
+    guide_err_noNode:"El nodo no tiene tracks: esta funcion es del T-Echo.",
+    guide_err_nofile:"Elige primero un fichero GPX.",
+    guide_erase:"Borrar ranura", guide_erased:"Ranura borrada.",
+    guide_vivo:"Track en vivo del nodo", guide_vivo_pts:"puntos grabados",
+    guide_vivo_lap:"OJO: el track en vivo ha dado la vuelta, asi que su principio ya se ha perdido. Para \u00abvolver a casa\u00bb usalo cuanto antes.",
   },
   en:{
     disconnected:"Disconnected", connect:"Connect", disconnect:"Disconnect",
@@ -926,6 +987,22 @@ const I18N = {
     obj_send:"Send object", obj_kill:"Delete object", obj_name_ph:"NAME", obj_cmt_ph:"Comment",
     obj_empty:"No objects sent in this session.",
     obj_sent:"Object sent: ", obj_killed:"Object deleted: ", obj_need:"Fill in the name and the coordinates.",
+    /* ===== TRACK GUIDANCE (2026-09-22) ===== */
+    guide:"Guidance", guide_title:"Tracks to follow",
+    guide_hint:"Load a route (a WikiLoc GPX) and the node guides you along it: compass, off-track distance and what is left. Up to 5 routes, 2040 points each: if the GPX has more, it is simplified here before sending.",
+    guide_pick:"1. Pick the GPX file", guide_file:"No file",
+    guide_simpl:"2. Simplify to", guide_points:"points",
+    guide_points_now:"The GPX has", guide_points_seg:"points; simplified it would be",
+    guide_slot:"3. Target slot", guide_send:"Send to the node",
+    guide_sending:"Sending", guide_of:"of", guide_chunks:"chunks",
+    guide_done:"Track stored in slot", guide_read:"Read the node slots",
+    guide_slots:"Slots", guide_empty:"empty", guide_when:"recorded on",
+    guide_err_nofix:"Connect to the node first (Status tab).",
+    guide_err_noNode:"This node has no tracks: the feature is T-Echo only.",
+    guide_err_nofile:"Pick a GPX file first.",
+    guide_erase:"Erase slot", guide_erased:"Slot erased.",
+    guide_vivo:"Node live track", guide_vivo_pts:"points recorded",
+    guide_vivo_lap:"WARNING: the live track has wrapped, so its beginning is already lost. Use it for \u00abback home\u00bb soon.",
   }
 };
 let lang = localStorage.getItem("ea2oy_lang") || "es";
@@ -1354,6 +1431,10 @@ function buildTabs(){
   // El recorrido tiene pestana propia: es una tarea aparte (descargar, mirar el
   // mapa, exportar) y no pintaba nada enterrada al final de "Acciones".
   nav.appendChild(mk("track", t("trip_log")));
+  // ★ GUIADO POR TRACKS (2026-09-22): pestana propia. Es OTRA COSA que el registro de viaje
+  //   (aquel es lo que el nodo ya ha andado; esto son rutas para que te guie), y mezclarlas en
+  //   la misma pestana confundiria las dos.
+  nav.appendChild(mk("guide", t("guide")));
   showPanel("status", nav.firstChild);
 }
 function showPanel(which, btn){
@@ -1367,6 +1448,12 @@ function showPanel(which, btn){
     // El canvas solo tiene tamano real cuando su pestana esta visible, asi que al
     // entrar se reencuadra la ruta: si no, saldria descentrada o en blanco.
     if (lastTrack && lastTrack.pts && lastTrack.pts.length) Mapa.encuadrar();
+  }
+  if (which==="guide"){
+    $("panel-guide").classList.add("active");
+    // Al entrar se pregunta al nodo que ranuras tiene: asi lo que se ve es lo que HAY en el
+    // nodo, no lo que este navegador crea recordar.
+    if (typeof Guia !== "undefined") Guia.alEntrar();
   }
   if (btn) btn.classList.add("active");
   // VOLVER ARRIBA AL CAMBIAR DE PESTANA. Sin esto, si estabas leyendo el final de una
@@ -3674,6 +3761,11 @@ function handleLine(line){
   }
 }
 function onJson(msg){
+  // ★ PRIMERO LAS RESPUESTAS DE GUIADO (2026-09-22): las lleva `Guia`, que va mandando trozos y
+  //   esperando la contestacion de cada uno. Se le ofrecen ANTES que nada para que no las
+  //   confunda el manejador de estado (que tambien trae `ok`). Si no espera nada, devuelve false
+  //   y la linea sigue su camino de siempre.
+  if (typeof Guia !== "undefined" && Guia.respuesta(msg)) return;
   if (msg.ok===true){
     if (msg.config){
       applyConfig(msg.config);
@@ -4178,6 +4270,268 @@ buildForm();
 updateRxlogBtn();
 updateDiagBtn();
 initVolverArriba();   // el boton de "volver arriba" (aparece al desplazarse)
+
+/* ============================================================================
+   ★★★ GUIADO POR TRACKS: cargar rutas en el nodo (2026-09-22) ★★★
+
+   QUE HACE: coge un GPX (de WikiLoc), lo simplifica a los puntos que quepan en una ranura, y
+   se lo manda al nodo POR TROZOS. El nodo lo guarda y luego puede guiarte por esa ruta.
+
+   ★★ POR QUE SE SIMPLIFICA, Y POR QUE CON RAMER-DOUGLAS-PEEUCKER ★★
+     Un GPX de WikiLoc trae miles de puntos (uno cada pocos metros). En una ranura caben 2040.
+     Quedarse con uno de cada N seria lo facil, pero ROMPE LAS CURVAS: en una carretera de
+     montana, quedarse con uno de cada cinco corta las eses y la ruta dibujada se va por el
+     barranco. RDP quita los puntos que NO anaden informacion (los de una recta) y CONSERVA los
+     que definen la forma (las curvas), que es justo lo que hace falta aqui.
+
+   ★★ Y EL TOPE LO DICE EL NODO, NO ESTA CLAVADO AQUI ★★
+     Al entrar en la pestana se le pregunta (`track_list`) y el contesta `topePorRanura`. Si el
+     dia de manana se cambia el reparto de memoria, esta pantalla se entera sola. Mandar mas
+     puntos de los que caben NO se recorta en silencio: el nodo lo RECHAZA con el motivo.
+
+   ★ EL ENVIO VA POR TROZOS DE 64 PUNTOS, que es lo que cabe de sobra en una linea del cable
+     (4096 bytes). Cada trozo se responde, y con esa respuesta se sabe por donde iba: si uno
+     fallara, se puede reenviar por su numero en vez de empezar de cero.
+   ============================================================================ */
+const Guia = (()=>{
+  let puntos = [];          // la ruta ya simplificada, lista para mandar
+  let puntosCrudos = 0;     // cuantos traia el GPX (para ensenarlo)
+  let tope = 2040;          // lo actualiza el nodo al preguntarle
+  let enviando = false;
+
+  const $g = (id)=> document.getElementById(id);
+
+  // ---- 1) LEER EL GPX ----
+  // Se sacan los <trkpt> (y, si no hay, los <rtept>: hay GPX que traen la ruta como "ruta" en
+  // vez de como "track", y perderla por eso seria una tonteria).
+  function leeGpx(texto){
+    const doc = new DOMParser().parseFromString(texto, "application/xml");
+    if (doc.querySelector("parsererror")) return null;
+    let nodos = Array.from(doc.getElementsByTagName("trkpt"));
+    if (!nodos.length) nodos = Array.from(doc.getElementsByTagName("rtept"));
+    const out = [];
+    for (const n of nodos){
+      const la = parseFloat(n.getAttribute("lat")), lo = parseFloat(n.getAttribute("lon"));
+      if (!isFinite(la) || !isFinite(lo)) continue;
+      const ele = n.getElementsByTagName("ele")[0];
+      const alt = ele ? parseFloat(ele.textContent) : 0;
+      out.push([la, lo, isFinite(alt) ? alt : 0]);
+    }
+    return out;
+  }
+
+  // ---- 2) SIMPLIFICAR ----
+  // ★★ EL METODO, Y POR QUE ES ESTE ★★
+  //   Hay dos maneras de simplificar y una es un desastre en una ruta de montana:
+  //     - QUEDARSE CON UNO DE CADA N: es lo facil, y corta las curvas. En una carretera de
+  //       montana, coger uno de cada cinco se come las eses y la ruta dibujada se va por el
+  //       barranco. (Comprobado: se apartaba hasta 380 m de la ruta de verdad.)
+  //     - RAMER-DOUGLAS-PEEUCKER: quita los puntos que NO anaden informacion (los de una recta)
+  //       y conserva los que definen la forma (las curvas). Es el que se usa aqui.
+  //
+  //   ★ Y NO SE USA UNA TOLERANCIA A OJO: RDP necesita un "hasta aqui vale" (una tolerancia en
+  //     metros), y elegirla mal deja la ruta con 300 puntos cuando caben 2040 (desperdicio) o
+  //     con 3000 (el nodo la rechaza). Aqui se puntua CADA punto por lo que aporta y se cogen
+  //     los mejores hasta llenar el presupuesto, que es la forma de aprovecharlo entero.
+  //
+  //   COMO: se parte la ruta por el punto que MAS se aparta de la recta entre los extremos, y
+  //   se repite con los dos trozos, SIEMPRE por el que mas se aparta de todos. Asi el
+  //   presupuesto se gasta en los sitios que de verdad tienen curva, y se para justo al llenar
+  //   el presupuesto. (Probado antes de otra manera que NO valia: "puntuar cada punto y coger
+  //   los mejores" rompe la jerarquia -- un punto puede quedarse sin su padre y la linea se va
+  //   por donde no es. Se vio midiendo: una recta daba 20 km de desviacion. Esta forma no puede
+  //   fallar asi porque un trozo solo se parte DESPUES de que su padre este elegido.)
+  function simplificaHasta(pts, maxPuntos){
+    const n = pts.length;
+    if (n <= maxPuntos) return pts.slice();
+    if (maxPuntos < 2) return [pts[0], pts[n-1]];
+
+    const lat0 = pts[0][0];
+    const mPorLat = 110540, mPorLon = 111320 * Math.cos(lat0 * Math.PI / 180);
+    const x = pts.map(p=> p[1] * mPorLon), y = pts.map(p=> p[0] * mPorLat);
+
+    // Error de un punto respecto a la recta que va de `a` a `b`, en metros.
+    function errorDe(i, a, b){
+      const vx = x[b]-x[a], vy = y[b]-y[a];
+      const L2 = vx*vx + vy*vy;
+      if (L2 < 1e-9) return Math.hypot(x[i]-x[a], y[i]-y[a]);
+      let t = ((x[i]-x[a])*vx + (y[i]-y[a])*vy) / L2;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(x[i]-(x[a]+t*vx), y[i]-(y[a]+t*vy));
+    }
+    // Busca el punto que mas se aparta dentro de un trozo. -1 si el trozo ya es una recta.
+    function peorDe(a, b){
+      let maxD = 0, maxI = -1;
+      for (let i = a+1; i < b; i++){
+        const d = errorDe(i, a, b);
+        if (d > maxD){ maxD = d; maxI = i; }
+      }
+      return maxI;
+    }
+
+    const queda = new Uint8Array(n);
+    queda[0] = 1; queda[n-1] = 1;
+    let usados = 2;
+    const trozos = [];                      // {a, b, i, d} = trozo con su punto de corte
+    {
+      const i = peorDe(0, n-1);
+      if (i >= 0) trozos.push({a:0, b:n-1, i, d: errorDe(i, 0, n-1)});
+    }
+    while (usados < maxPuntos && trozos.length){
+      // El trozo que MAS se aparta de todos es el que se parte: asi el presupuesto se gasta
+      // donde hay curva, no repartido por donde la ruta es recta.
+      let mejor = 0;
+      for (let k = 1; k < trozos.length; k++) if (trozos[k].d > trozos[mejor].d) mejor = k;
+      const t = trozos.splice(mejor, 1)[0];
+      queda[t.i] = 1; usados++;
+      const i1 = peorDe(t.a, t.i);
+      if (i1 >= 0) trozos.push({a:t.a, b:t.i, i:i1, d: errorDe(i1, t.a, t.i)});
+      const i2 = peorDe(t.i, t.b);
+      if (i2 >= 0) trozos.push({a:t.i, b:t.b, i:i2, d: errorDe(i2, t.i, t.b)});
+    }
+    const out = [];
+    for (let i = 0; i < n; i++) if (queda[i]) out.push(pts[i]);
+    return out;
+  }
+
+  // ---- 3) MANDARLO POR TROZOS ----
+  const POR_TROZO = 64;      // el mismo numero que usa el comprobador del firmware
+
+  async function manda(){
+    if (!writer){ alert(t("guide_err_nofix")); return; }
+    if (!puntos.length){ alert(t("guide_err_nofile")); return; }
+    if (enviando) return;
+    enviando = true;
+    const slot = parseInt($g("guiaSlot").value, 10) || 0;
+    const prog = $g("guiaProg");
+
+    // La fecha y hora que se guardan con la ranura: la del momento de cargarla. El nodo las
+    // ensena en su menu (fecha y hora, sin nombres, como pidio el operador).
+    const ahora = new Date();
+    const lista = [];
+    for (let i = 0; i < puntos.length; i += POR_TROZO) lista.push([i, puntos.slice(i, i+POR_TROZO)]);
+
+    prog.textContent = t("guide_sending") + " 0/" + puntos.length + " (" + t("guide_chunks") + " 0/" + lista.length + ")";
+    const r1 = await pideUno({cmd:"track_begin", slot, puntos: puntos.length,
+                              year: ahora.getFullYear(), month: ahora.getMonth()+1,
+                              day: ahora.getDate(), hour: ahora.getHours(), minute: ahora.getMinutes()});
+    if (!r1 || r1.ok === false){
+      prog.textContent = (r1 && r1.err) ? r1.err : t("guide_err_noNode");
+      enviando = false; return;
+    }
+    let hechos = 0;
+    for (let c = 0; c < lista.length; c++){
+      const [desde, trozo] = lista[c];
+      const r = await pideUno({cmd:"track_chunk", slot, desde, pts: trozo});
+      if (!r || r.ok === false){
+        prog.textContent = "FALLO en el trozo " + (c+1) + ": " + ((r && r.err) || "sin respuesta");
+        enviando = false; return;
+      }
+      hechos += trozo.length;
+      prog.textContent = t("guide_sending") + " " + hechos + "/" + puntos.length +
+                         " (" + t("guide_chunks") + " " + (c+1) + "/" + lista.length + ")";
+    }
+    const r2 = await pideUno({cmd:"track_end", slot});
+    enviando = false;
+    if (!r2 || r2.ok === false){ prog.textContent = (r2 && r2.err) || "FALLO al cerrar"; return; }
+    prog.textContent = t("guide_done") + " " + (slot+1) + " (" + puntos.length + " " + t("guide_points") + ")";
+    leeRanuras();
+  }
+
+  // ---- 4) HABLAR CON EL NODO, UNA PETICION Y SU RESPUESTA ----
+  // El canal ya tiene su lector de lineas; aqui se engancha una promesa que espera la respuesta
+  // con el MISMO `ok`/`err` que usa el protocolo. Con un tope de tiempo: si el nodo no
+  // contesta, es mejor decirlo que dejar la pantalla colgada para siempre.
+  const pendientes = [];
+  function pideUno(obj){
+    return new Promise((res)=>{
+      pendientes.push(res);
+      cmdJson(obj);
+      setTimeout(()=>{ const i = pendientes.indexOf(res); if (i >= 0){ pendientes.splice(i,1); res(null); } }, 4000);
+    });
+  }
+  // Engancha la respuesta: la llama el lector de lineas del canal (ver handleLine).
+  function respuesta(obj){
+    if (!pendientes.length) return false;
+    if (!("ok" in obj)) return false;          // no es una respuesta a un comando nuestro
+    const res = pendientes.shift();
+    res(obj);
+    return true;
+  }
+
+  // ---- 5) LEER LO QUE HAY EN EL NODO ----
+  async function leeRanuras(){
+    if (!writer) return;
+    const r = await pideUno({cmd:"track_list"});
+    const tabla = $g("guiaTabla");
+    if (!r || r.ok === false){
+      tabla.innerHTML = "<tr><td>" + ((r && r.err) || t("guide_err_nofix")) + "</td><td></td></tr>";
+      return;
+    }
+    if (typeof r.topePorRanura === "number"){
+      tope = r.topePorRanura;
+      $g("guiaTope").max = tope;
+      // Si el usuario no ha tocado el campo, se pone el tope que dice el nodo. Si lo ha tocado,
+      // se respeta: puede querer mandar menos puntos a proposito.
+      if (!$g("guiaTope").dataset.tocado) $g("guiaTope").value = tope;
+    }
+    let html = "";
+    (r.ranuras || []).forEach(s=>{
+      const que = s.valida ? (s.puntos + " " + t("guide_points")) : t("guide_empty");
+      const cuando = s.valida ? (t("guide_when") + " " + s.cuando) : "";
+      html += "<tr><td>" + t("guide_slot") + " " + (s.slot+1) + "</td><td>" + que + " " + cuando + "</td></tr>";
+    });
+    tabla.innerHTML = html || ("<tr><td>" + t("no_data") + "</td><td></td></tr>");
+    const v = $g("guiaVivo");
+    v.textContent = t("guide_vivo") + ": " + (r.puntosVivo || 0) + " " + t("guide_vivo_pts") +
+                    (r.vivoDioLaVuelta ? " — " + t("guide_vivo_lap") : "");
+  }
+
+  // ---- 6) LOS BOTONES Y EL FICHERO ----
+  function alEntrar(){
+    $g("guiaTope").max = tope;
+    if (!$g("guiaTope").dataset.tocado) $g("guiaTope").value = tope;
+    leeRanuras();
+  }
+
+  document.addEventListener("DOMContentLoaded", ()=>{
+    const f = $g("guiaFile");
+    if (!f) return;                       // la pestana no esta (no deberia pasar)
+    f.addEventListener("change", ()=>{
+      const file = f.files && f.files[0];
+      if (!file){ $g("guiaFileInfo").textContent = t("guide_file"); puntos = []; return; }
+      const fr = new FileReader();
+      fr.onload = ()=>{
+        const crudos = leeGpx(fr.result);
+        if (!crudos || !crudos.length){
+          $g("guiaFileInfo").textContent = file.name + " — no se han encontrado puntos de ruta";
+          puntos = []; $g("guiaPuntosInfo").textContent = "";
+          return;
+        }
+        puntosCrudos = crudos.length;
+        const maxP = parseInt($g("guiaTope").value, 10) || tope;
+        puntos = simplificaHasta(crudos, Math.min(maxP, tope));
+        $g("guiaFileInfo").textContent = file.name;
+        $g("guiaPuntosInfo").textContent = t("guide_points_now") + " " + puntosCrudos + " " +
+            t("guide_points_seg") + " " + puntos.length + " " + t("guide_points");
+      };
+      fr.readAsText(file);
+    });
+    $g("guiaTope").addEventListener("input", ()=>{ $g("guiaTope").dataset.tocado = "1"; });
+    $g("guiaSend").addEventListener("click", manda);
+    $g("guiaRead").addEventListener("click", leeRanuras);
+    $g("guiaErase").addEventListener("click", async ()=>{
+      if (!writer){ alert(t("guide_err_nofix")); return; }
+      const slot = parseInt($g("guiaSlot").value, 10) || 0;
+      const r = await pideUno({cmd:"track_end", slot, borrar:true});
+      $g("guiaProg").textContent = t("guide_erased");
+      leeRanuras();
+      void r;
+    });
+  });
+
+  return { alEntrar, respuesta, leeRanuras };
+})();
 </script>
 </body>
 </html>

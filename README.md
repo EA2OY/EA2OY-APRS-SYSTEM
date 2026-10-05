@@ -126,37 +126,37 @@ fichero con **todo** lo que lleva grabado, así que siempre podrás dejarla como
 
 | Tu placa | Fichero |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b86_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b86_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 > 📌 **Los cuatro ficheros de `firmware/release/` son estos** (los nombres exactos, para
 > que no haya dudas al buscar en la carpeta):
-> `KachoSystem_v1.0alpha_b86_Faketec_E22P-433M30S.uf2`,
-> `KachoSystem_v1.0alpha_b86_Faketec_HT-RA62_433.uf2`,
-> `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo-Plus_S140v7.uf2` y
-> `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo_S140v7.uf2`.
+> `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2`,
+> `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2`,
+> `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` y
+> `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2`.
 
 > ✅ **Cada binario dice lo que lleva (contador de compilación arreglado el 2026-09-16)**: el
 > número sube **cuando cambia el código**, así que el que contesta el nodo por USB
-> (`1.0alpha b86`) identifica el firmware que lleva dentro, y coincide con el nombre del
+> (`1.0alpha b131`) identifica el firmware que lleva dentro, y coincide con el nombre del
 > fichero. Hasta esa noche el contador estuvo clavado en `b9` (un fallo del propio contador:
 > siete cambios de firmware seguidos salieron con el mismo número), así que **si tienes
-> descargado un `..._b86_...`, es el mismo firmware que aquel `b13` pero con el número viejo**:
+> descargado un `..._b131_...`, es el mismo firmware que aquel `b13` pero con el número viejo**:
 > quédate siempre con el número más alto.
 >
 > | Fichero | Fecha | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b86_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 743424 | `833AAEB0DF22302C7656EE4C46AEF9B8461EAEF551DCD0E5F0FB9D1082592413` |
-> | `KachoSystem_v1.0alpha_b86_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 743424 | `EE94347666D23EDB3714D633DFA5BBA581DDCA3828BD6F174FE03A7A7959565C` |
-> | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 734720 | `B80FD91075A4FA087C96172A193710EEE32C3179BB6ECF4E40D00B54C0212AD5` |
-> | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 732672 | `2B72FAF64A8252E6033A15F9999E775A2FEF64EA1FACC7C2F334C557DAAE2BAA` |
+> | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 743936 | `B77AE319FD2F65A9372EAB24B99D8F627BFA081F4DDB48D7D32E848B34518285` |
+> | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 743936 | `9A745E8B3383421E85FF3BEC0C519DE38EAC2A055FF7771B34054CEAE9F288EC` |
+> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1082880 | `E0212001E623CEDE2FC245AD9C22309FB50AC15FB730828947F28F09C78C6801` |
+> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1078784 | `CA625160924894A5FCE30776436B608CEEEB3D72653AB72C2F9972AE3AF86D3F` |
 >
-> Los cuatro son la compilación **b86** del **2026-09-22**, hecha desde el código de este mismo
-> repositorio (etiqueta `b86-funcional`), y es la que está **verificada en placa**.
+> Los cuatro son la compilación **b131** del **2026-09-22**, hecha desde el código de este mismo
+> repositorio (etiqueta `b131-funcional`), y es la que está **verificada en placa**.
 > Para comprobar la huella en tu ordenador (Windows, PowerShell):
-> `Get-FileHash .\KachoSystem_v1.0alpha_b86_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
+> `Get-FileHash .\KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
 
 > ⚠️ **El T-Echo necesita cargador S140 versión 7** y su fichero es el `..._S140v7.uf2`.
 > Comprueba la versión en el fichero **`INFO_UF2.TXT`** de la unidad de grabación: debe
@@ -419,27 +419,27 @@ bootloader is not supported by the published files.
 
 | Your board | File |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b86_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b86_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 > ✅ **Every binary says what it carries (build counter fixed on 2026-09-16)**: the number goes up
-> **when the code changes**, so what the node answers over USB (`1.0alpha b86`) identifies the
+> **when the code changes**, so what the node answers over USB (`1.0alpha b131`) identifies the
 > firmware, and it matches the file name. Until that night the counter was stuck at `b9` (a bug in
 > the counter itself: seven firmware changes in a row came out with the same number), so **if you
-> downloaded a `..._b86_...` file, it is the same firmware as that old `b13` with the old number**:
+> downloaded a `..._b131_...` file, it is the same firmware as that old `b13` with the old number**:
 > always keep the highest number. Date and SHA-256 to check what you got:
 >
 > | File | Date | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b86_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 743424 | `833AAEB0DF22302C7656EE4C46AEF9B8461EAEF551DCD0E5F0FB9D1082592413` |
-> | `KachoSystem_v1.0alpha_b86_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 743424 | `EE94347666D23EDB3714D633DFA5BBA581DDCA3828BD6F174FE03A7A7959565C` |
-> | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 734720 | `B80FD91075A4FA087C96172A193710EEE32C3179BB6ECF4E40D00B54C0212AD5` |
-> | `KachoSystem_v1.0alpha_b86_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 732672 | `2B72FAF64A8252E6033A15F9999E775A2FEF64EA1FACC7C2F334C557DAAE2BAA` |
+> | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 743936 | `B77AE319FD2F65A9372EAB24B99D8F627BFA081F4DDB48D7D32E848B34518285` |
+> | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 743936 | `9A745E8B3383421E85FF3BEC0C519DE38EAC2A055FF7771B34054CEAE9F288EC` |
+> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1082880 | `E0212001E623CEDE2FC245AD9C22309FB50AC15FB730828947F28F09C78C6801` |
+> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1078784 | `CA625160924894A5FCE30776436B608CEEEB3D72653AB72C2F9972AE3AF86D3F` |
 >
-> All four are the **b86** build of **2026-09-21**, made from this repository's code (tag
-> `b86-funcional`), and it is the one **verified on hardware**.
+> All four are the **b131** build of **2026-09-21**, made from this repository's code (tag
+> `b131-funcional`), and it is the one **verified on hardware**.
 
 ### Build
 

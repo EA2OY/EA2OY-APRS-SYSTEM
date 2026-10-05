@@ -38,3 +38,9 @@ void powerSleepNow(const DigiConfig &cfg);
 // Timed deep sleep (System ON LOWPWR + RTC2, blocks <=500 s) then reboot.
 // Used by tracker mode between beacons. Never returns.
 void powerSleepTimed(const DigiConfig &cfg, uint32_t secs);
+
+// ★★ APAGAR DE VERDAD, a mano (2026-09-22). NO es dormir: no arma NINGUNA fuente de
+// despertar, asi que el nodo se queda apagado aunque suba la tension (que es lo que pasa
+// mientras carga). Solo vuelve con el BOTON DE RESET o quitando la alimentacion.
+// Es lo que hace el firmware de referencia del T-Echo (cfr34k). Nunca vuelve.
+void powerShutdownNow(const DigiConfig &cfg);

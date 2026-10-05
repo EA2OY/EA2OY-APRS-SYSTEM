@@ -42,6 +42,42 @@ constexpr uint32_t kSleepNoticeMs = 5000;
 constexpr uint8_t kLowReadingsNeeded = 8;
 constexpr uint32_t kLowReadIntervalMs = 20000;
 
+// ===========================================================================
+//  ★★★ LAS REGLAS DEL DORMIR/DESPERTAR, Y POR QUE SON ESAS (2026-09-22) ★★★
+//
+//  Esto NO es un antirrebote ni un numero puesto a ojo. Viene del firmware de referencia del
+//  operador (NavaTastic) y de su documento `docs/cerebro/04_energia_bateria.md`, que lo explica
+//  entero y marca lo que NO se puede tocar. Se copia aqui porque el dia que alguien quiera
+//  "optimizarlo" tiene que saber que rompe.
+//
+//  QUE PROTEGE: el **APAGADO FALSO**. Un apagado falso (dormir el nodo creyendo que la bateria
+//  esta agotada cuando no lo esta) deja el repetidor **MUDO EN LA MONTANA** hasta que alguien
+//  sube fisicamente. Es el peor fallo posible en este proyecto.
+//
+//  DE QUE PROTEGE: del **RUIDO DE RF EN EL DIVISOR DE TENSION**. En zonas de RF alta, la
+//  conmutacion de la radio induce ruido en el divisor que mide la bateria, y el ADC lee valores
+//  FALSOS por debajo del umbral sin que la bateria este baja.
+//
+//  LAS DOS MITADES DEL CRITERIO, y las dos importan:
+//    1) EL ESPACIADO: las lecturas no pueden caer todas dentro del MISMO pico de interferencia.
+//       Por eso son 8 SEPARADAS, y por eso el `delay(200)` del pre-chequeo de arranque no se
+//       acorta (ni se pone a 0).
+//    2) TODAS SEGUIDAS, SIN EXCEPCION: cualquier lectura buena ABORTA el apagado (el `break`
+//       del pre-chequeo, el `else { gLowCount = 0; }` del monitor). Un solo valor bueno
+//       desmiente la hipotesis de "bateria agotada". **El criterio NO es una mayoria**: "4 de 8"
+//       dejaria pasar un pico de RF y apagaria el nodo.
+//
+//  ★★ Y LA REGLA QUE NOS SALTABAMOS (corregida el 2026-09-22): **EL ARRANQUE NO DUERME**.
+//     El pre-chequeo de arranque sirve para saber si hay bateria y para AVISAR; el que decide
+//     apagar es el MONITOR DE RUNTIME, con su ciclo completo. En el arranque solo se cuentan las
+//     lecturas para informar. Ver el bloque de `powerBootCheck()`, donde estaba el fallo.
+//
+//  ★ QUIEN DESPIERTA: el LPCOMP, cuando la bateria SUBE por encima de `sleepWakeMv` (de fabrica
+//    3,71 V, recuperacion solar). Duerme en System OFF; el comparador es lo unico que lo saca de
+//    ahi. Y si el LPCOMP no se pudiera armar, el nodo NO entra en System OFF: duerme por RTC y
+//    reintenta el ciclo, para no quedarse muerto esperando un boton.
+// ===========================================================================
+
 // Emergency fallback if the LPCOMP never reports READY (see armLpcompWake):
 // sleep on the RTC for this long (microamps) and retry after the reboot.
 constexpr uint32_t kLpcompFallbackSecs = 900;  // 15 min
@@ -276,15 +312,51 @@ bool powerBootCheck(const DigiConfig &cfg) {
     Serial.print(lows);
     Serial.println(F("}"));
   }
+  // ★★★ EL ARRANQUE **NO** DUERME (2026-09-22). AQUI ESTABA EL FALLO. ★★★
+  //
+  // QUE HACIA ANTES:
+  //     if (lows >= kLowReadingsNeeded) {
+  //       displayLowBatTone();
+  //       displayPopupWait("DURMIENDO: BAT BAJA RESERVA", ...);
+  //       powerSleepNow(cfg);        // <- se dormia AQUI MISMO
+  //     }
+  //   O sea: si al arrancar salian 8 lecturas bajas seguidas, el nodo se apagaba en el acto y
+  //   **en silencio**.
+  //
+  // ★★ POR QUE ESTABA MAL, y la fuente es NavaTastic (docs/cerebro/04_energia_bateria.md, y su
+  //    `setup()` en src/main.cpp). Su documento dice, de su pre-chequeo de arranque:
+  //
+  //      "Mide 8 lecturas espaciadas 200 ms; si todas estan [bajas] ... lo deja ARRANCAR.
+  //       Quien vuelve a dormirlo es el MONITOR DE RUNTIME, a los ~160 s"
+  //
+  //    Y en su codigo, cuando las 8 salen bajas, **no duerme**: marca el nodo y lo deja
+  //    arrancar para que pueda avisar (`[Vivo]` si esta en la banda del corte, `[Reserva]` si
+  //    esta por debajo). El apagado lo decide el monitor, con su ciclo completo de 8 lecturas
+  //    espaciadas 20 s.
+  //
+  //    EL MOTIVO, escrito por el: "un apagado falso deja el repetidor MUDO en la montana hasta
+  //    que alguien sube fisicamente -- el peor fallo posible en este proyecto". Dormir en el
+  //    arranque hace justo eso: el nodo desaparece sin decir nada, y encima se salta el filtro
+  //    de 160 s que existe para no apagarse por un pico de RF en el divisor.
+  //
+  // ★★ QUE HACE AHORA: el pre-chequeo SOLO INFORMA (papel que cumple de sobra: avisa por el
+  //    cable, por la pantalla y con el tono). El nodo **arranca**, y quien decide dormir es el
+  //    monitor de runtime (`powerLoop`), con su ciclo completo. Eso es lo que manda el
+  //    documento, y ademas deja al nodo OPERAR esos ~160 s: si venia de sueno con el sol
+  //    subiendo, esos minutos pueden ser los que le permitan quedarse despierto.
+  //
+  // ★ El pre-chequeo NO es inutil sin el dormido: sigue haciendo falta para saber si hay
+  //   bateria suficiente y para avisar. Lo que NO puede es tomar la decision de apagar.
   if (lows >= kLowReadingsNeeded) {
-    // Primero el aviso sonoro (melodia triste de bateria baja) y despues el popup: el nodo
-    // se apaga y hay que enterarse aunque no se este mirando la pantalla (2026-09-15).
+    // Aviso sonoro + popup: hay que enterarse aunque no se este mirando la pantalla.
     displayLowBatTone();
-    displayPopupWait("DURMIENDO: BAT BAJA RESERVA", kSleepNoticeMs);
-    powerSleepNow(cfg);  // Reserva: back to sleep, LPCOMP will wake us
+    displayPopupWait("BATERIA BAJA: VIGILANDO", kSleepNoticeMs);
+    if (!tncActive()) {
+      Serial.println(F("{\"power\":\"boot_low\",\"accion\":\"arranca, decide el monitor\"}"));
+    }
   }
   announceOnline(cfg);
-  return true;  // Vivo: proceed, runtime monitor will re-check
+  return true;  // arranca siempre; el monitor de runtime decide si toca dormir
 }
 
 void powerLoop(const DigiConfig &cfg) {
@@ -401,6 +473,73 @@ void powerSleepTimed(const DigiConfig &cfg, uint32_t secs) {
   rtcSleepBlocks(secs);
 
   NVIC_SystemReset();
+  while (1) {
+    delay(1000);
+  }
+}
+
+// ===========================================================================
+//  ★★★ APAGAR DE VERDAD ("Shutdown"), 2026-09-22 ★★★
+//
+//  ESTO NO ES "DORMIR". Son dos cosas distintas y hacen falta las dos:
+//
+//    DORMIR (powerSleepNow, arriba)          APAGAR (esto)
+//    ------------------------------          ------------------------------------
+//    Lo decide el firmware                  Lo decide el OPERADOR, desde el menu
+//    Despierta al SUBIR la tension (LPCOMP) Despierta con el BOTON DE RESET
+//    Nodo solar que se recupera solo        Apagado a mano, sin vuelta atras
+//    NO se toca                            Se anade nuevo
+//
+//  POR QUE HACIA FALTA (peticion del operador y de un companero suyo): cargando el nodo en
+//  casa por la noche, si coge posicion en interiores la manda. La solucion es poder apagarlo
+//  mientras carga. Y el apagado normal no vale para eso, por dos motivos:
+//    - con el cable puesto, nuestro firmware NO deja dormir (lo bloquea a proposito), y
+//    - aunque dejara, el dormir despierta al subir la tension, y EL CARGADOR SUBE LA TENSION:
+//      se encenderia solo a mitad de la carga, que es justo lo que se quiere evitar.
+//
+//  ★★ COMO LO HACE EL FIRMWARE DE REFERENCIA (cfr34k, `t-echo-lora-aprs`), LEIDO DE SU CODIGO:
+//     desactiva los botones INCLUIDO el despertar, apaga todos los perifericos y llama a
+//     `sd_power_system_off()`. **No arma NINGUNA fuente de despertar**, y ademas tiene
+//     comentada a proposito la linea del SDK que prepararia el despertar por boton
+//     (`bsp_btn_ble_sleep_mode_prepare()`). O sea: de ahi solo se sale con el BOTON DE RESET
+//     (P0.18, que en su pinout esta marcado como "beware: this is the reset pin!") o quitando
+//     la alimentacion.
+//
+//  ★ Y LO IMPORTANTE DE SU ENFOQUE: **no mira el USB ni una vez**. Ni su `voltage_monitor.c` ni
+//    su `menusystem.c` mencionan el cable para el apagado. Es UN SOLO CAMINO, pase lo que pase
+//    con el cable: asi no hay ninguna "escena" que el nodo pueda elegir mal, que es la duda que
+//    preocupaba al operador. Aqui se copia igual: una sola regla, sin decidir nada.
+//
+//  ★ LO QUE **SI** HACEMOS NOSOTROS Y EL NO: `quiesceForSleep()` deja las lineas del bus de la
+//    pantalla en un estado conocido antes de quitarles la corriente, que es mas fino que
+//    dejarlas como esten.
+// ===========================================================================
+void powerShutdownNow(const DigiConfig &cfg) {
+  (void)cfg;
+
+  // 1) Aviso por radio: UNA vez, y ANTES de callar la radio. Va sin el filtro de "mute" a
+  //    proposito: esto es una accion DELIBERADA del operador y tiene que salir al aire para
+  //    que se sepa que el nodo se ha apagado a mano (y no que se ha caido). Es el equivalente
+  //    al "DURMIENDO HASTA EL SOL" del dormir.
+  if (radioReady() && cfg.mode != 0) {
+    aprsSendBannerBeacon(cfg, "APAGADO A MANO");
+  }
+
+  // 2) Callar todos los perifericos (GPS fuera, radio a dormir, buses cerrados, riel abajo).
+  quiesceForSleep();
+
+  // 3) Boton fisico como entrada con pull-up y SIN SENSE (igual que el dormir): en System OFF
+  //    los pines conservan su estado, y un pin flotante puede dar corriente.
+  variant_shutdown();
+
+  // 4) Un respiro para que el MOSFET de periferia termine de bajar antes de apagar el nucleo.
+  delay(200);
+
+  // 5) ★★ System OFF SIN ARMAR NADA. Aqui esta la diferencia con `powerSleepNow()`: alli se
+  //    arma el LPCOMP para que el sol lo despierte; aqui NO se arma nada, a proposito, para
+  //    que el nodo se quede apagado aunque suba la tension (que es lo que pasa mientras
+  //    carga). Solo sale con el boton de RESET o quitando la alimentacion.
+  NRF_POWER->SYSTEMOFF = 1;
   while (1) {
     delay(1000);
   }

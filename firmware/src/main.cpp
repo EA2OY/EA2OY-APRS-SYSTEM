@@ -25,6 +25,7 @@
 #include "store.h"
 #include "tnc.h"
 #include "tracker.h"
+#include "tracks.h"     // tracks de guiado y vuelta a casa (solo aplicacion de T-Echo)
 
 static DigiConfig gConfig;
 static ConfigProtocol gProtocol(gConfig);
@@ -152,7 +153,22 @@ static void feedbackPulsacion() {
 //   VARIOS seguidos cuando el operador toca en rafaga (ver handleButton), y no tiene
 //   sentido repetir luz+pitido+vibracion por cada uno: sonarian pegados.
 static void accionToqueAccion() {
-  if (menuIsOpen()) menuNavigate();           // capacitivo navega en el menu
+  // ★★ EL TACTIL TAMBIEN NAVEGA EN LAS PANTALLAS DE TRACKS (2026-09-22) ★★
+  //   Estaba puesto como `if (menuIsOpen()) menuNavigate();`, y las pantallas de tracks ponen
+  //   `gMenuOn = false` A PROPOSITO (sustituyen al menu de ajustes: no SON el menu). Resultado:
+  //   con la lista de tracks abierta, TOCAR CAMBIABA DE ESCENA en vez de mover la seleccion.
+  //   El BOTON FISICO si navegaba, porque llama a `menuShort()` directamente, y esa funcion tiene
+  //   su propia puerta para las pantallas de tracks. O sea que el mismo gesto hacia dos cosas
+  //   distintas segun por donde entrara. Lo vio el operador en el aparato.
+  //   ★ La condicion buena es "hay algo abierto que se navega": el menu O las pantallas de
+  //     tracks. Y `menuNavigate()` ya sabe cual de los dos es.
+  if (menuIsOpen()
+#ifdef TRACKS_DISPONIBLE
+      || pantallaTracksActiva()
+#endif
+     ) {
+    menuNavigate();
+  }
   else if (!displayIsOn()) displayWake();
   else displayNextScene(true);                // true = venia del tactil (agrupa repintados)
 }
@@ -382,6 +398,24 @@ void setup() {
 
   flogInit();
   flogSetEnabled(gConfig.mode != 0);
+
+  // ★★ TRACKS: SOLO LEE, NO ESCRIBE (2026-09-22) ★★
+  //   Busca las cabeceras de pagina del track en vivo y de las ranuras para saber que hay
+  //   guardado. NO escribe nada a proposito: una escritura a flash que espera al NVMC aqui,
+  //   en el arranque, congela el puerto USB CDC (leccion ya pagada, esta contada en flog.cpp).
+  //   El track en vivo se empieza a escribir mas tarde, cuando hay la primera posicion valida.
+  //   En las Faketec no existe (ver tracks.h): su mapa de memoria no se ha comprobado.
+#ifdef TRACKS_DISPONIBLE
+  // ★★ INTERRUPTOR DE DIAGNOSIS: `TRACKS_SIN_INIT` (2026-09-22) ★★
+  //   PARA QUE: el b126 no arrancaba en el T-Echo Plus, y el mismo firmware con el modulo de
+  //   tracks FUERA si arrancaba. Esto separaba "lo que corre al arrancar" del resto.
+  //   ★ YA SE SABE LA CAUSA (era la alineacion de las escrituras a flash, ver tracks.h), asi que
+  //     el interruptor queda como herramienta de taller, NO para las tandas normales: en
+  //     produccion `TRACKS_SIN_INIT` no se define y esto se compila como siempre.
+#ifndef TRACKS_SIN_INIT
+  tracksInit();
+#endif
+#endif
   // El numero de compilacion va en la linea de arranque del registro: asi, mirando un
 // volcado, se sabe EXACTAMENTE que firmware escribio esas lineas.
 flogLine("EVT boot v%s %s mode=%u", APP_VERSION_STR, APP_BUILD_NUM,
@@ -504,6 +538,29 @@ void loop() {
   //   sesion POR DELANTE del modo. Antes, en repetidor, no servia de nada salvo
   //   que estuviera activo "GPS en repetidor".
   trackerSetCoordsTick(now);
+
+  // ★★ GRABACION DEL TRACK EN VIVO (2026-09-22) ★★
+  //   Va aqui, con el GPS ya atendido en este mismo paso del bucle y DESPUES de la sesion de
+  //   "fijar coords" (para no grabar mientras se esta asentando una posicion que aun no es
+  //   buena).
+  //   La funcion decide ella sola si toca guardar (un punto cada 10 m, o cada 60 s parado) y
+  //   exige fijacion: sin `fix` NO se guarda nada, porque una latitud sin fix envenenaria el
+  //   track para siempre y el "volver a casa" llevaria a un punto que nunca existio.
+  //   Solo existe en el T-Echo (ver tracks.h): en las Faketec no se compila.
+#ifdef TRACKS_DISPONIBLE
+  tracksTick(now);
+
+  // ★★ EL MOTOR DE GUIADO, con la misma posicion (2026-09-22) ★★
+  //   Solo cuando hay guiado en marcha, para no gastar cuando no se navega. Exige fijacion: sin
+  //   ella no hay posicion que proyectar, y recalcular con una latitud vieja daria una desviacion
+  //   que no es la de ahora (peor que no decir nada).
+  //   ★ NO se limita la frecuencia aqui: el motor es barato (~16.000 lecturas de flash) y el
+  //     bucle pasa por aqui cada 2 s. El REFRESCO DE PANTALLA, que es lo caro, va aparte y por
+  //     huella de contenido: si los metros no cambian, no se repinta.
+  if (tracksGuiaActivo() && gpsGet().fix) {
+    tracksGuiaTick(gpsGet().lat, gpsGet().lon);
+  }
+#endif
   if (trackerSetCoordsEstado() == TRK_COORDS_ASENTANDO) {
     // Progreso en pantalla: sin esto, tres minutos mirando una pantalla quieta
     // parecen un cuelgue. La OLED lo enseña tal cual; la tinta tiene su PROPIA

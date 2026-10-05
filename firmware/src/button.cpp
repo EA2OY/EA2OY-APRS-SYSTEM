@@ -54,6 +54,63 @@
 
 #include "pins_board.h"   // PIN_BTN_TOUCH solo existe en el T-Echo (pins_techo.h)
 
+// ===========================================================================
+//  ★★ LA MAQUINA DE GESTOS DEJA DE DEPENDER DEL BUCLE (2026-09-21, segundo intento) ★★
+//
+//  EL PROBLEMA, medido en el codigo: los flancos los captura la interrupcion, si, pero
+//  **resolverlos** (antirrebote, ventana del doble, confirmacion del toque) se hacia en
+//  `procesa()`, y a `procesa()` solo se le llamaba desde el BUCLE y desde el bombeo del
+//  driver de la tinta. O sea: mientras el bucle esta metido en algo largo -el envio de los
+//  10.000 bytes al panel por bit-bang, un guardado en flash, una transmision-, la maquina
+//  de gestos NO AVANZA. Un toque que empieza y acaba dentro de ese rato llega al buzon con
+//  sus tiempos, pero nadie lo confirma a tiempo y se pierde.
+//
+//  COMO LO RESUELVE EL FIRMWARE DE REFERENCIA (cfr34k), y es lo que se copia aqui: alli la
+//  deteccion la lleva `app_button` de Nordic con su propio temporizador, y el callback
+//  **no dibuja: solo apunta** (`m_epaper_update_requested = true`). El repintado lo dispara
+//  el bucle cuando puede. La deteccion y el antirrebote son independientes del bucle.
+//
+//  LO QUE SE HACE AQUI: `procesa()` pasa a llamarse tambien desde la INTERRUPCION de un
+//  temporizador de hardware (TIMER3) cada 10 ms. Es el MISMO patron que ya funciona en este
+//  proyecto para el sueno temporizado (`power.cpp`, `RTC2_IRQHandler`): temporizador +
+//  NVIC_EnableIRQ + manejador a mano. No depende del bucle, ni de FreeRTOS, ni de que nadie
+//  ceda el control.
+//
+//  ★★ POR QUE 10 MS: los plazos que hay que resolver son de 40 ms (estabilidad), 120 ms
+//    (bloqueo) y 600 ms (doble/corto). Preguntar cada 10 ms deja un error de a lo sumo
+//    10 ms, que es una cuarta parte del plazo mas corto. El de referencia muestrea cada
+//    50 ms y le sobra.
+//
+//  ★★ PRIORIDAD, QUE ES LO QUE HAY QUE ENTENDER ANTES DE TOCAR ESTO ★★
+//    Los botones los atiende GPIOTE, y este nucleo lo configura en **prioridad 3**
+//    (WInterrupts.c: `NVIC_SetPriority(GPIOTE_IRQn, 3)`). Este temporizador se pone TAMBIEN
+//    en prioridad 3: son hermanos, ninguno tapa al otro, y ninguno toca los niveles 0/1/4
+//    que el SoftDevice se reserva (por si algun dia vuelve el Bluetooth).
+//
+//  ★★★ Y AQUI ESTA EL ERROR DEL PRIMER INTENTO, QUE HAY QUE DEJAR ESCRITO ★★★
+//    El primer intento (b71) uso un temporizador de FreeRTOS y protegio el estado compartido
+//    con `taskENTER_CRITICAL()`. **SE QUEDARON MUERTOS LOS DOS BOTONES.** El motivo esta en
+//    la aritmetica de prioridades de FreeRTOS:
+//        configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY = 2
+//      `taskENTER_CRITICAL()` enmascara las interrupciones cuya prioridad es **numerically >=
+//      2**, o sea la 2 y la 3, y **GPIOTE es la 3**. Resultado: cada vez que el bucle entraba
+//      en una seccion critica, la interrupcion de los botones quedaba ENMASCARADA, y como
+//      `bombearBoton()` hace eso en cada vuelta del bucle, los flancos se perdian.
+//      LECCION: en este proyecto NO se usa `taskENTER_CRITICAL()` para nada que tenga que
+//      seguir viendo interrupciones de GPIOTE. Con el temporizador de hardware y las dos
+//      interrupciones a la misma prioridad no hace falta ninguna seccion critica: el
+//      temporizador no puede interrumpir al manejador de GPIOTE ni al reves.
+//
+//  ★ EL TRABAJO SE HACE EN LA INTERRUPCION, NO EN UNA TAREA. Es lo que hace el de
+//    referencia (su callback de `app_button` corre en una interrupcion y solo apunta). Lo
+//    que se hace aqui dura microsegundos: unas comparaciones de enteros y, como mucho, leer
+//    un pin con `digitalRead()`. NADA de ejecutar acciones del firmware (eso sigue siendo del
+//    bucle, en su cola) y NADA de escribir por el puerto serie.
+// ===========================================================================
+#if !defined(BUTTON_SIN_TEMPORIZADOR)
+#define BUTTON_TEMPORIZADOR_MS 10
+#endif
+
 namespace {
 
 // ===========================================================================
@@ -127,8 +184,25 @@ constexpr int kBtnActivo = LOW;
 #if defined(PIN_BTN_TOUCH)
 constexpr int kToqueActivo = LOW;
 constexpr uint32_t kToqueEstableMs = 40;   // el toque debe aguantar esto
-constexpr uint32_t kToqueBloqueoMs = 250;  // ...y luego hay bloqueo: 1 toque = 1 accion
-constexpr uint32_t kToqueTardeMs = 250;    // confirmado mas tarde que esto: se descarta
+// ★ BLOQUEO BAJADO DE 250 A 120 MS (2026-09-21, peticion del operador: "el sistema es poco
+//   responsivo"). PARA QUE SIRVE DE VERDAD: solo para que un CONTACTO LARGO no valga por
+//   varios toques. Y eso ya lo garantiza `kToqueEstableMs`: una pastilla que se queda baja
+//   40 ms da UN flanco de subida y UN flanco de bajada, o sea UNA accion. El bloqueo de
+//   250 ms no protegia de nada que no estuviera ya protegido: lo UNICO que hacia era
+//   tirar los toques que llegaban entre 120 y 250 ms despues del anterior, que es
+//   justamente el ritmo al que toca una persona que va rapido. Con 120 ms se puede tocar
+//   a 5-6 toques por segundo y todos cuentan.
+constexpr uint32_t kToqueBloqueoMs = 120;  // ...y luego hay bloqueo: 1 toque = 1 accion
+// ★★ LA VENTANA DE RF LLEVA COLA (2026-09-21) ★★
+//   `gTxDesde..gTxHasta` las pone radio.cpp al empezar y al ACABAR la llamada a
+//   `transmit()`. Pero el amplificador del SX1262 y las tensiones del modulo no se apagan
+//   en el mismo instante en que `transmit()` retorna: siguen cayendo un rato. Los flancos
+//   fantasma de la pastilla que caen en esa cola se estaban aceptando como DEDOS, y
+//   entonces: (a) te cambian de pantalla solo, y (b) arman el bloqueo, o sea que encima te
+//   dejan sordo. Esta cola cubre esa caida. Si algun dia resulta que se come algun toque
+//   bueno, se baja (o se pone a 0) sin tocar nada mas.
+constexpr uint32_t kToqueColaRfMs = 150;
+constexpr uint32_t kToqueTardeMs = 250;    // (ya no descarta: ver procesa())
 #endif
 
 // ---- maquina de gestos del fisico (todo con marcas de tiempo) ----
@@ -152,6 +226,27 @@ uint8_t gColaN = 0;
 
 ButtonFeedbackFn gFeedback = nullptr;
 
+// ★★ EL AVISO SE PIDE AQUI, PERO SE DA EN EL BUCLE (b73) ★★
+//   `gFeedback()` enciende la luz y HACE SONAR EL ZUMBADOR, y `displayBeep()` **bloquea
+//   ~60 ms** (ondas cuadradas hechas a mano con un bucle ajustado por `micros()`).
+//   Mientras la maquina de gestos vivia solo en el bucle, esos 60 ms no eran un problema.
+//   Ahora `procesa()` corre tambien en la INTERRUPCION del temporizador (prioridad 3), y
+//   60 ms dentro de una interrupcion es inaceptable: se lleva por delante al resto de
+//   interrupciones de esa prioridad y a todo lo de prioridad menor.
+//   Solucion, y es la misma idea que el resto del modulo: la interrupcion APUNTA y el bucle
+//   EJECUTA. La interrupcion solo sube una bandera (una escritura); quien pita es el bucle,
+//   al pasar por `buttonPoll()` / `buttonPump()`.
+volatile bool gFeedbackPendiente = false;
+
+inline void pideAviso() { gFeedbackPendiente = true; }
+
+// Lo llama el bucle: si hay un aviso pedido, lo da AQUI (fuera de toda interrupcion).
+inline void cobraAviso() {
+  if (!gFeedbackPendiente) return;
+  gFeedbackPendiente = false;
+  if (gFeedback) gFeedback();
+}
+
 // ---- tactil ----
 #if defined(PIN_BTN_TOUCH)
 bool gToquePend = false, gToquePendNivel = false;
@@ -171,6 +266,18 @@ constexpr uint8_t kToquesMax = 8;      // toques aceptados que se acumulan como 
 uint32_t gToqueBloqueoHasta = 0;
 uint32_t gTxDesde = 0, gTxHasta = 0;   // ultima ventana de transmision
 bool gTxValida = false;
+// ★★ CONTADORES DEL TACTIL (2026-09-21) ★★
+// PARA QUE: el operador dice "a veces no coge los toques y no se decirte cuando sucede". Con
+// el bloqueo y la ventana de RF por medio, un toque puede perderse por tres motivos MUY
+// distintos, y hasta ahora NINGUNO dejaba rastro: no habia forma de saber cual era el
+// culpable. Ahora se cuentan los cuatro casos y se pueden leer por USB (ver buttonResumen).
+uint32_t gToquesOk = 0;         // aceptados (llegaron a la accion)
+uint32_t gToquesFtx = 0;        // descartados: cayeron dentro del RF propio o su cola
+uint32_t gToquesFbloqueo = 0;   // descartados: bloqueo de kToqueBloqueoMs
+uint32_t gToquesTarde = 0;      // confirmados tarde Y con la pastilla ya suelta
+// ★ CUANDO SE CONFIRMO EL ULTIMO TOQUE (b82). Es lo que lee la pantalla para saber si acabas
+//   de tocar, SIN tocar la cola de acciones (ver buttonUltimoToqueConfirmado()).
+volatile uint32_t gToqueConfirmadoMs = 0;
 #endif
 
 inline void encola(ButtonEvent ev) {
@@ -202,7 +309,9 @@ void flancoFisico(bool pulsado, uint32_t ms) {
     gLongFired = false;
     // Aviso INMEDIATO (luz + pitido): aqui es donde el operador "nota" el toque,
     // sin esperar a saber si el gesto es corto (600 ms), largo o doble.
-    if (gFeedback) gFeedback();
+    // ★ SE PIDE, NO SE DA (ver pideAviso/cobraAviso): esto puede estar corriendo dentro de
+    //   la interrupcion del temporizador, y el pitido bloquea 60 ms.
+    pideAviso();
     // ¿Es el segundo toque de un doble? Se mide SUELTA -> PULSACION (ver la tabla).
     if (gTaps == 1 && (uint32_t)(ms - gLastTapMs) <= kClickWindowMs) {
       gEsperaDoble = true;
@@ -229,20 +338,35 @@ void flancoFisico(bool pulsado, uint32_t ms) {
 #if defined(PIN_BTN_TOUCH)
 void flancoToque(bool pulsado, uint32_t ms) {
   if (!pulsado) return;                // solo interesa el toque, no el destrozo
-  // (a) ¿cae dentro de una transmision? La pastilla se dispara con el RF propio:
-  //     es un toque FANTASMA, no un dedo. Se descarta y no se vuelve a armar hasta
-  //     que la pastilla se suelte (el flanco de bajada llega solo y limpia el estado).
-  if (gTxValida && (int32_t)(ms - gTxDesde) >= 0 && (int32_t)(gTxHasta - ms) >= 0) {
+  // (a) ¿cae dentro de una transmision (mas la cola del amplificador)? La pastilla se
+  //     dispara con el RF propio: es un toque FANTASMA, no un dedo. Se descarta y no se
+  //     vuelve a armar hasta que la pastilla se suelte (el flanco de bajada llega solo y
+  //     limpia el estado).
+  //     ★ ESTE DESCARTE NO ARMA EL BLOQUEO, y es a proposito: si lo armara, un fantasma
+  //       del RF nos dejaria sordos los kToqueBloqueoMs siguientes. Un toque que cae aqui
+  //       se pierde (el nodo esta hablando), pero en cuanto deja de hablar se atiende lo
+  //       que llegue.
+  if (gTxValida && (int32_t)(ms - gTxDesde) >= 0 &&
+      (int32_t)((gTxHasta + kToqueColaRfMs) - ms) >= 0) {
     gToquePend = false;
+    gToquesFtx++;
     return;
   }
   // (b) bloqueo tras el toque anterior: un roce largo no vale por tres acciones.
-  if ((int32_t)(ms - gToqueBloqueoHasta) < 0) { gToquePend = false; return; }
+  //     ★ AQUI SI SE CUENTA EL QUE SE PIERDE: si el operador ve que "no le coge los
+  //       toques", este contador dice si el culpable es el bloqueo.
+  if ((int32_t)(ms - gToqueBloqueoHasta) < 0) {
+    gToquePend = false;
+    gToquesFbloqueo++;
+    return;
+  }
   gToqueBloqueoHasta = ms + kToqueBloqueoMs;
   // Se CUENTA, no se marca: los toques aceptados se acumulan (ver gToquesHechos) y el
   // bucle los cobra todos juntos, que es lo que permite bajar cuatro filas del menu con
   // cuatro toques aunque la pantalla solo pueda pintar una vez al final.
   if (gToquesHechos < kToquesMax) gToquesHechos++;
+  gToquesOk++;
+  gToqueConfirmadoMs = ms;   // sello para que la pantalla sepa cuando dejaste de tocar (b82)
 }
 #endif
 
@@ -293,10 +417,21 @@ void procesa(uint32_t ahora) {
       gToquePend = true; gToquePendNivel = nivel; gToquePendMs = ms;
     }
     if (gToquePend && (uint32_t)(ahora - gToquePendMs) >= kToqueEstableMs) {
-      // Confirmado TARDE (el bucle estuvo ciego mas de lo razonable): no se puede
-      // responder de un nivel que no se ha visto sostenerse. Se descarta.
-      if ((uint32_t)(ahora - gToquePendMs) <= kToqueTardeMs) {
+      // ★★ LA CONFIRMACION TARDIA YA NO SE DESCARTA (2026-09-21) ★★
+      // ANTES: si el nivel llevaba confirmado mas de kToqueTardeMs (250 ms) se tiraba SIN
+      //   DECIR NADA ("no se puede responder de un nivel que no se ha visto sostenerse").
+      //   El razonamiento tenia un fallo: no hace falta HABERLO VISTO, se puede COMPROBAR
+      //   AHORA. Si en este instante la pastilla sigue activa, es un dedo puesto, aunque el
+      //   bucle llevara 300 ms sin mirar (un repintado, un guardado en flash, cualquier
+      //   atasco). Tirarlo era perder un toque de verdad por un motivo que no se sostenia.
+      // AHORA: se confirma por lo que dice la patilla AHORA MISMO. Si ya se solto, entonces
+      //   si es un fantasma (un pico corto que empezo y acabo mientras no mirábamos): se
+      //   descarta y se cuenta, para que quede rastro.
+      const bool sigueActiva = (digitalRead(PIN_BTN_TOUCH) == kToqueActivo);
+      if (sigueActiva || (uint32_t)(ahora - gToquePendMs) <= kToqueTardeMs) {
         flancoToque(gToquePendNivel, gToquePendMs);
+      } else {
+        gToquesTarde++;
       }
       gToquePend = false;
     }
@@ -305,6 +440,59 @@ void procesa(uint32_t ahora) {
 }
 
 }  // namespace
+
+// ===========================================================================
+//  EL TEMPORIZADOR DE HARDWARE QUE RESUELVE LOS GESTOS SIN DEPENDER DEL BUCLE
+//  (el porque y la leccion del primer intento, en la cabecera del fichero)
+// ===========================================================================
+#if !defined(BUTTON_SIN_TEMPORIZADOR)
+namespace {
+
+// Tick de 1 us: PRESCALER 4 -> 16 MHz / 2^4 = 1 MHz.
+constexpr uint32_t kTimerPrescaler = 4;
+constexpr uint32_t kTimerTicksMs = 1000;                      // 1 ms en ticks de 1 us
+constexpr uint32_t kTimerCompare = BUTTON_TEMPORIZADOR_MS * kTimerTicksMs;
+
+}  // namespace
+
+// El manejador va en `extern "C"` y con el nombre exacto de la tabla de vectores, igual que
+// el `RTC2_IRQHandler` de power.cpp (patron ya probado en este proyecto).
+extern "C" void TIMER3_IRQHandler(void) {
+  if (NRF_TIMER3->EVENTS_COMPARE[0]) {
+    NRF_TIMER3->EVENTS_COMPARE[0] = 0;   // se limpia SIEMPRE, o es una tormenta de interrupciones
+    // Solo se resuelve la maquina de gestos: los gestos ya resueltos se ENCOLAN y la accion
+    // la ejecuta el bucle cuando puede. NO se ejecuta nada del firmware desde aqui.
+    //
+    // ★ `procesa()` NO esta en el namespace anonimo para esto: se declara arriba, en el
+    //   mismo fichero, y se llama desde aqui y desde el bucle. Dura microsegundos.
+    procesa(millis());
+  }
+}
+
+static void arrancaTemporizadorBoton() {
+  static bool yaArrancado = false;
+  if (yaArrancado) return;   // idempotente: el banco de pruebas llama a buttonInit() mas de una vez
+  yaArrancado = true;
+  NRF_TIMER3->TASKS_STOP = 1;
+  NRF_TIMER3->TASKS_CLEAR = 1;
+  NRF_TIMER3->MODE = TIMER_MODE_MODE_Timer;
+  NRF_TIMER3->BITMODE = TIMER_BITMODE_BITMODE_32Bit;
+  NRF_TIMER3->PRESCALER = kTimerPrescaler;
+  NRF_TIMER3->CC[0] = kTimerCompare;
+  NRF_TIMER3->SHORTS = 0;                 // sin atajos: el contador sigue y la interrupcion avisa
+  NRF_TIMER3->INTENSET = TIMER_INTENSET_COMPARE0_Msk;
+  NRF_TIMER3->EVENTS_COMPARE[0] = 0;
+  // ★ LA PRIORIDAD, QUE ES LO QUE HAY QUE ENTENDER: GPIOTE (los botones) esta en prioridad 3
+  //   en este nucleo. Aqui se pone LO MISMO: son hermanos, ninguno tapa al otro, y no se
+  //   tocan los niveles 0/1/4 que el SoftDevice se reserva.
+  NVIC_SetPriority(TIMER3_IRQn, 3);
+  NVIC_ClearPendingIRQ(TIMER3_IRQn);
+  NVIC_EnableIRQ(TIMER3_IRQn);
+  NRF_TIMER3->TASKS_START = 1;
+}
+#else
+static void arrancaTemporizadorBoton() {}   // apagado a proposito (ver BUTTON_SIN_TEMPORIZADOR)
+#endif
 
 void buttonInit() {
   // ★ PUESTA A CERO COMPLETA (2026-09-15). Esta funcion tiene que dejar el modulo en un
@@ -349,6 +537,11 @@ void buttonInit() {
   gToqueBloqueoHasta = 0;
   gTxValida = false;
   gTxDesde = gTxHasta = 0;
+  gToquesOk = 0;
+  gToquesFtx = 0;
+  gToquesFbloqueo = 0;
+  gToquesTarde = 0;
+  gToqueConfirmadoMs = 0;
 
   /* ★★ SIN RESISTENCIA INTERNA: COMO EL FIRMWARE DE REFERENCIA (2026-09-21) ★★
      Aqui ponia `pinMode(PIN_BTN_TOUCH, INPUT_PULLUP)`. El firmware del aleman (cfr34k), que
@@ -365,12 +558,35 @@ void buttonInit() {
   buzonMete(gToque, digitalRead(PIN_BTN_TOUCH) == kToqueActivo, millis());
   attachInterrupt(digitalPinToInterrupt(PIN_BTN_TOUCH), isrToque, CHANGE);
 #endif
+
+  // ★★ Y LO ULTIMO: EL TEMPORIZADOR QUE HACE QUE LOS GESTOS NO DEPENDAN DEL BUCLE ★★
+  // Se arranca AQUI, con las interrupciones ya puestas, para que no haya ni un instante en
+  // el que un flanco se capture y nadie lo resuelva. Es idempotente: si se llama dos veces
+  // (banco de pruebas), no se crean dos temporizadores.
+  arrancaTemporizadorBoton();
 }
 
-void buttonPump() { procesa(millis()); }
+// ★★ AQUI NO HAY `taskENTER_CRITICAL()`, Y ES A PROPOSITO (b71 -> b72) ★★
+//   El primer intento protegio estas funciones con secciones criticas de FreeRTOS y **se
+//   quedaron muertos los dos botones**: `taskENTER_CRITICAL()` enmascara las interrupciones
+//   de prioridad >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY (2), y **GPIOTE, que es
+//   quien atiende los dos botones, esta en prioridad 3**. O sea que la proteccion se comia
+//   justo las interrupciones que tenia que dejar pasar.
+//
+//   NO HACE FALTA NINGUNA PROTECCION, y el motivo es que ya no hay dos tareas:
+//     - el temporizador de gestos es una INTERRUPCION de prioridad 3 (igual que GPIOTE);
+//     - el bucle es una tarea, y una tarea NO puede interrumpir a una interrupcion.
+//   Por lo tanto `procesa()` nunca se ejecuta a la vez que si mismo: o lo llama el bucle
+//   (con las interrupciones ya atendidas) o lo llama el temporizador (que no puede empezar
+//   mientras el bucle este dentro de `procesa()` con las interrupciones sin enmascarar).
+void buttonPump() {
+  procesa(millis());
+  cobraAviso();     // el aviso (luz + pitido) se da SIEMPRE en el bucle, nunca en la ISR
+}
 
 ButtonEvent buttonPoll() {
   procesa(millis());
+  cobraAviso();
   if (gColaN == 0) return BTN_NONE;
   const ButtonEvent ev = gCola[0];
   for (uint8_t i = 1; i < gColaN; i++) gCola[i - 1] = gCola[i];
@@ -401,6 +617,67 @@ bool buttonTouchPoll() {
 #endif
 }
 
+bool buttonTouchPending() {
+#if defined(PIN_BTN_TOUCH)
+  return gToquesHechos > 0;   // `uint8_t`: la lectura es atomica, no hace falta protegerla
+#else
+  return false;
+#endif
+}
+
+uint32_t buttonUltimoToqueConfirmado() {
+#if defined(PIN_BTN_TOUCH)
+  // ★★ ESTE ES EL DATO QUE NECESITA LA PANTALLA, Y ES UNO DE SOLO LECTURA (b82) ★★
+  //   PARA QUE: la pantalla quiere saber cuando has DEJADO de tocar para pintar. Antes lo
+  //   deducia con un reloj propio que empezaba al primer toque, y por eso un toque suelto
+  //   pagaba los 400 ms enteros de aplazamiento.
+  //
+  //   ★★ POR QUE ESTE DATO Y NO OTRO (esto es lo que costo tres compilaciones) ★★
+  //     Los dos intentos anteriores fallaron porque la pantalla tocaba `gToquesHechos`, y ese
+  //     contador NO es un aviso de trabajo: es LA COLA DE ACCIONES PENDIENTES que el bucle
+  //     cobra y ejecuta. Vaciarlo o mirarlo en mal momento = el toque se pierde y el menu no
+  //     se mueve ("no funciona el boton capacitivo").
+  //     Este sello de tiempo NO se lleva nada por delante: se escribe cuando un toque se
+  //     confirma, y quien lo lee solo lo lee. La pantalla puede mirarlo mil veces sin que se
+  //     pierda ni una accion.
+  //
+  //   ★ La lectura de 32 bits alineada es atomica en este procesador, asi que no hace falta
+  //     ninguna proteccion aunque lo escriba la interrupcion.
+  return gToqueConfirmadoMs;
+#else
+  return 0;
+#endif
+}
+
+bool buttonDrenaToquesPendientes() {
+#if defined(PIN_BTN_TOUCH)
+  // ★★ ESTA FUNCION EXISTE POR UN FALLO REAL (b77 -> b78) ★★
+  //   En el b77 la pantalla decidia si aplazarse mirando `buttonTouchPending()` SIN vaciar
+  //   nada. Y la cola la vacia el `while (buttonTouchPoll())` del bucle, que corre DESPUES
+  //   de que la pantalla haya decidido. Resultado: el driver veia "hay trabajo pendiente"
+  //   SIEMPRE, se aplazaba siempre, y los toques se quedaban sin cobrar. El operador lo
+  //   describio como "ahora no funciona el boton capacitivo".
+  //   ANTES de todo esto no pasaba porque el driver llamaba a `bombearBoton()` durante sus
+  //   esperas, y eso SI vaciaba la cola. Al quitar el bombeo, se perdio esa parte sin darse
+  //   cuenta. Esta funcion devuelve al driver exactamente esa pieza, y solo esa: VACIA la
+  //   cola de toques confirmados (sin ejecutar nada; las acciones las sigue ejecutando el
+  //   bucle) y dice si habia algo.
+  bool habia = false;
+  while (gToquesHechos > 0) { gToquesHechos--; habia = true; }
+  return habia;
+#else
+  return false;
+#endif
+}
+
+uint32_t buttonTouchLockedHasta() {
+#if defined(PIN_BTN_TOUCH)
+  return gToqueBloqueoHasta;
+#else
+  return 0;
+#endif
+}
+
 void buttonNoteRadioTx(uint32_t desdeMs, uint32_t hastaMs) {
 #if defined(PIN_BTN_TOUCH)
   gTxDesde = desdeMs;
@@ -417,5 +694,17 @@ uint32_t buttonLostEdges() {
   return gFisico.perdidos + gToque.perdidos;
 #else
   return gFisico.perdidos;
+#endif
+}
+
+void buttonResumen(char *dst, size_t n) {
+#if defined(PIN_BTN_TOUCH)
+  snprintf(dst, n, "tactil: ok=%lu rf=%lu bloq=%lu tarde=%lu flancosPerdidos=%lu",
+           (unsigned long)gToquesOk, (unsigned long)gToquesFtx,
+           (unsigned long)gToquesFbloqueo, (unsigned long)gToquesTarde,
+           (unsigned long)(gFisico.perdidos + gToque.perdidos));
+#else
+  snprintf(dst, n, "sin pastilla tactil: flancosPerdidos=%lu",
+           (unsigned long)gFisico.perdidos);
 #endif
 }

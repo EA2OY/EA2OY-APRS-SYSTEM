@@ -12,6 +12,7 @@ works; their notices are preserved in the source files where applicable.
 | ArduinoJson | github.com/bblanchon/ArduinoJson | MIT | `lib_deps` in `platformio.ini` |
 | uf2conv.py | github.com/adafruit/Adafruit_UF2 (`tools/uf2conv.py`) via `_referencias\t-echo-lora-aprs` | MIT | `bin/uf2conv.py` |
 | APRS-LoRa reference (RF params, config catalog) | richonguzman/LoRa_APRS_iGate (CA2RXU) | GPL-3.0 | Interop reference only (`_referencias\LoRa_APRS_iGate_HEAD`) |
+| Fuente DIN 1451 Mittel 10pt (`kDin10Bits`, `kDin10Glyphs`) | firmware `t-echo-lora-aprs` de Thomas Kolb (cfr34k) | MIT | `src/epd_font_din10.h`. El aviso de copyright va DOS veces en ese fichero: arriba y junto a los datos. ★ Los DATOS de la fuente son MIT; el envoltorio (`EpdGfxGlyph`/`EpdGfxFont` y el motor que los pinta, en `src/epaper_techo.cpp`) es GPL-3.0 de este proyecto |
 
 GPL-3.0-compatible incorporation: LGPL-2.1 and MIT components may be combined
 into a GPL-3.0 work; LGPL-2.1 and MIT copyright notices are retained verbatim

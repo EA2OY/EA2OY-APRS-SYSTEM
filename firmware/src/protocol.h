@@ -17,6 +17,7 @@
 #include "config.h"
 #include "radio.h"
 #include "store.h"
+#include "tracks.h"     // el traspaso de tracks por USB (solo existe en el T-Echo)
 #include "usb_lector.h"
 
 /* ================= LATIDO DEL USB (diagnostico, 2026-09-13) =================
@@ -159,6 +160,18 @@ class ConfigProtocol {
   void handleDiag(const JsonVariantConst &body);
   void handleBeacon();
   void handleMessage(const JsonDocument &doc);
+
+  // ★★ TRASPASO DE TRACKS POR USB (2026-09-22) ★★
+  //   Ver la explicacion larga en `protocol.cpp`. En dos palabras: un track se manda POR TROZOS
+  //   y cada trozo se escribe a la flash segun llega, porque una linea del cable tiene un tope
+  //   de 4096 bytes (kMaxLinea) y un track son decenas de miles de bytes.
+  //   Solo en el T-Echo: en las Faketec el modulo de tracks no existe (ver tracks.h).
+#ifdef TRACKS_DISPONIBLE
+  void handleTrackInicio(const JsonDocument &doc);
+  void handleTrackTrozo(const JsonDocument &doc);
+  void handleTrackFin(const JsonDocument &doc);
+  void handleTrackLista();
+#endif
   void sendLine(const String &s);
 
   // Ganchos del lector (estaticos: el lector es C++ puro y no sabe de esta clase).

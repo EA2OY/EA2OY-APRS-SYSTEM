@@ -88,6 +88,42 @@ bool buttonTouchPresent();
 // toques fantasma.
 bool buttonTouchPoll();
 
+// ¿Hay algun toque YA CONFIRMADO esperando a que el bucle lo cobre? (2026-09-21)
+// PARA QUE: la pantalla de tinta necesita saberlo antes de ponerse a pintar. Si empieza a
+// pintar con toques en la cola, pinta un estado INTERMEDIO y ademas deja al operador sin
+// atencion durante todo el refresco (~700 ms), asi que los toques siguientes se ejecutan
+// tarde: el operador lo describio como "no guarda si pulso varias veces".
+// Con esto, el driver espera a que la cola este vacia y pinta UNA vez, con el estado final.
+bool buttonTouchPending();
+
+// ★ CUANDO SE CONFIRMO EL ULTIMO TOQUE, en `millis()` (0 = ninguno todavia). (b82)
+// PARA QUE: la pantalla de tinta necesita saber cuando has DEJADO de tocar, para pintar
+// entonces y no antes. Con este dato, un toque suelto se pinta en cuanto pasa la ventana
+// corta, en vez de pagar los 400 ms de aplazamiento enteros.
+//
+// ★★ POR QUE ESTE DATO Y NO LA COLA DE TOQUES (costo tres compilaciones aprenderlo) ★★
+//   Es un SELLO DE TIEMPO y nada mas: quien lo lee, solo lo lee. No se lleva ninguna accion
+//   por delante. `buttonTouchPoll()` y `buttonTouchPending()`, en cambio, son LA COLA DE
+//   ACCIONES PENDIENTES que el bucle cobra y ejecuta: si la pantalla las usa para decidir si
+//   aplazarse, le quita al bucle los toques que tenia que ejecutar, y el menu deja de
+//   responder. Paso exactamente eso en el b77/b78.
+uint32_t buttonUltimoToqueConfirmado();
+
+// VACIA la cola de toques confirmados y dice si habia alguno. NO ejecuta acciones: solo
+// vacia los contadores (las acciones las sigue cobrando el bucle con buttonTouchPoll()).
+// ES LO QUE TIENE QUE USAR LA PANTALLA antes de decidir si se aplaza: si solo MIRA la cola
+// sin vaciarla, la ve siempre llena (el bucle la vacia despues) y se aplaza para siempre.
+// Ese fue el fallo del b77: "no funciona el boton capacitivo". Ver el comentario largo en
+// button.cpp.
+bool buttonDrenaToquesPendientes();
+
+// Hasta que `millis()` la pastilla tactil no vuelve a aceptar un toque (bloqueo de 1 toque =
+// 1 accion). Sirve para que la pantalla sepa cuando la rafaga ha terminado DE VERDAD: si
+// pinta antes, el toque que llega dentro del bloqueo se pierde y el operador lo nota como
+// "no me ha guardado este". Se compara con el mismo criterio que en button.cpp:
+//     (int32_t)(ahora - buttonTouchLockedHasta()) < 0   ->  todavia bloqueado
+uint32_t buttonTouchLockedHasta();
+
 // El emisor de radio ha estado en el aire entre esos dos millis(). La pastilla
 // capacitiva del T-Echo se dispara con el RF propio, asi que un toque cuyo flanco
 // caiga ahi se DESCARTA. Lo llama radio.cpp alrededor de cada transmision.
@@ -95,3 +131,15 @@ void buttonNoteRadioTx(uint32_t desdeMs, uint32_t hastaMs);
 
 // Contador de diagnostico: flancos que no cupieron en el buzon (deberia ser 0).
 uint32_t buttonLostEdges();
+
+// ---------------------------------------------------------------------------
+//  RESUMEN DEL TACTIL (2026-09-21) — para saber POR QUE se pierde un toque
+//  El operador se queja de que "a veces no coge los toques y no sabe decir cuando". Un
+//  toque puede perderse por cuatro motivos distintos y hasta ahora ninguno dejaba rastro.
+//  Esto los saca todos juntos para poder mirarlos por USB DESPUES de que haya pasado:
+//      ok    = aceptados (llegaron a la accion)      -> si esto sube, el tactil va bien
+//      rf    = cayeron dentro del RF propio o su cola -> el nodo estaba hablando
+//      bloq  = cayeron dentro del bloqueo             -> toques demasiado seguidos
+//      tarde = confirmados tarde Y con la pastilla ya suelta (pico corto)
+//  Se llama desde el comando `boton` del CLI. No modifica nada.
+void buttonResumen(char *dst, size_t n);

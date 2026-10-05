@@ -8,6 +8,9 @@
 
 #include "config.h"
 #include "sensors.h"
+// ★ Hace falta para que `TRACKS_DISPONIBLE` este definido aqui (ver la declaracion de
+//   `pantallaTracksActiva` mas abajo). `tracks.h` no incluye `display.h`, asi que no hay circulo.
+#include "tracks.h"
 
 void displayInit();
 
@@ -49,6 +52,20 @@ void displayDiagTexto(char *out, size_t n);
 // se puede diagnosticar (y volver a grabar por software). En las placas con OLED no hace nada.
 void displayArrancaPantalla();
 
+// ---------------------------------------------------------------------------
+//  UNA PIEZA SUELTA DEL DRIVER DE TINTA, PARA LOS BANCOS DE PRUEBA (2026-09-21)
+//  PARA QUE: un firmware de MEDIDA (ver `src/hello_pad.cpp` y el entorno `techo_plus_pad`)
+//  necesita dibujar un texto y mandarlo al panel SIN arrastrar todo el programa. Esta funcion
+//  hace las dos cosas: dibuja el aviso y lo manda.
+//
+//  ★ POR QUE NO SE EXPONEN `epdFlush()` NI `epdFullRefresh()` DIRECTAMENTE: dentro del driver
+//    esas funciones viven en un espacio de nombres ANONIMO (son privadas), y al declararlas
+//    aqui en el ambito global el compilador ve DOS candidatas y no sabe cual elegir
+//    ("call of overloaded epdFlush() is ambiguous", medido). Con un nombre propio y una sola
+//    puerta no hay ambiguedad posible. En las placas con OLED no existe.
+// ---------------------------------------------------------------------------
+void epdBancoAvisoYRefresca(const char *texto);
+
 bool displayPresent();
 bool displayIsOn();
 void displayWake();
@@ -80,6 +97,19 @@ void menuShort();
 void menuLong();
 void menuNavigate();   // capacitivo: mover selección o cambiar el valor en edición
 void menuEditCancel();
+
+// ★★ LAS PANTALLAS DE TRACKS TAMBIEN SE NAVEGAN, Y EL TACTIL TIENE QUE SABERLO (2026-09-22) ★★
+//   Estas pantallas SUSTITUYEN al menu de ajustes, asi que `menuIsOpen()` es falso mientras
+//   estan abiertas (a proposito). Y el tactil decidia con `menuIsOpen()` si navegaba o cambiaba
+//   de escena: por eso, con la lista de tracks abierta, tocar cambiaba de escena en vez de mover
+//   la seleccion. Esta funcion es la puerta que le faltaba.
+//   ★ VA GUARDADA: solo existe en el T-Echo (en las demas placas el modulo de tracks no se
+//     compila, ver tracks.h). Sin la guarda, en las Faketec el enlazador no encontraria la
+//     funcion y no compilarian. Y `display.h` se incluye en las dos, asi que la guarda tiene que
+//     estar aqui tambien.
+#ifdef TRACKS_DISPONIBLE
+bool pantallaTracksActiva();
+#endif
 
 // Scene navigation (button short press) and manual popup. Changing the scene
 // with the button also pauses the auto-advance for a few seconds.
