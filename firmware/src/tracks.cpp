@@ -24,9 +24,10 @@
 //     en un anillo. Pero eso PIERDE EL INICIO del track, y el inicio es justo adonde hay que
 //     volver en "volver a casa". Por eso se marca con `gVivoVueltas`, y quien navegue puede
 //     AVISAR en vez de llevar al usuario a un punto que ya no es el principio.
-//     8160 puntos: a 1 punto cada 10 m son 81 km de ruta, y a 1 punto cada 60 s parado son 136
-//     horas. Una ruta de un dia NO da la vuelta; un nodo olvidado encendido en casa SI (~5,7
-//     dias), y ahi es donde importa el aviso.
+//     ★ 6800 puntos (no 8160: al pasar el punto a 12 bytes bajo la capacidad, y este comentario
+//     se quedo con el numero viejo -- ver la nota de `tracks.h`). A 1 punto cada 10 m son 68 km de
+//     ruta, y a 1 punto cada 60 s parado son 113 horas (4,7 dias). Una ruta de un dia NO da la
+//     vuelta; un nodo olvidado encendido en casa SI, y ahi es donde importa el aviso.
 // ===========================================================================
 
 #include "tracks.h"
@@ -408,7 +409,7 @@ void tracksVivoAnade(double lat, double lon, float altM) {
   const uint16_t pag   = (uint16_t)(gVivoEscribe / TRACK_PUNTOS_PAGINA);
   const uint16_t dentro = (uint16_t)(gVivoEscribe % TRACK_PUNTOS_PAGINA);
 
-  // ¿Hay que empezar pagina nueva? Cuando la actual ya tiene sus 408 puntos.
+  // ¿Hay que empezar pagina nueva? Cuando la actual ya tiene sus 340 puntos.
   if (dentro == 0) {
     // La pagina anterior se cierra con su cuenta (solo baja bits: no hace falta borrarla).
     if (gVivoEscribe > 0) {
@@ -482,7 +483,7 @@ bool tracksVivoLee(uint32_t idx, TrackPunto *out) {
 //
 //  ★ POR QUE 10 METROS: guardando por tiempo, un tramo lento se llena de puntos y uno rapido
 //    queda vacio, o sea que el track representaria al reloj y no a la ruta. Con 10 m, los 8.160
-//    puntos del anillo dan para 81 km: una ruta de montana de un dia entero son 15-30 km.
+//    puntos del anillo dan para 68 km: una ruta de montana de un dia entero son 15-30 km.
 //
 //  ★ Y NO SE GUARDA NADA SIN FIJACION: si el GPS no tiene fix, la latitud y la longitud son
 //    basura (o el ultimo valor conocido), y meterlas en el track lo envenenaria para siempre

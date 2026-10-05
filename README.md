@@ -13,7 +13,7 @@
 [![Licencia: GPL v3](https://img.shields.io/badge/Licencia-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Plataforma: nRF52840](https://img.shields.io/badge/Plataforma-nRF52840-green.svg)](https://www.nordicsemi.com/Products/nRF52840)
 [![Banda: 433 MHz](https://img.shields.io/badge/Banda-433%20MHz-orange.svg)](#-ficha-técnica)
-[![APRS: ecosistema LoRa](https://img.shields.io/badge/APRS-ecosistema%20LoRa-yellow.svg)](#-compatibilidad)
+[![APRS: ecosistema LoRa](https://img.shields.io/badge/APRS-ecosistema%20LoRa-yellow.svg)](#-ficha-técnica)
 [![Manual: PDF](https://img.shields.io/badge/Manual-PDF%20en%20espa%C3%B1ol-critical.svg)](assets/Manual_Kacho_System.pdf)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Caf%C3%A9%20voluntario-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/ea2oy)
 
@@ -73,8 +73,14 @@ distancia, a mano, parado...).
 📺 **Pantalla propia y menú con un solo botón.** Las placas Faketec llevan OLED y el nodo la
 aprovecha: escenas que van rotando (estado, últimas recibidas, sensores, estaciones oídas...) y un
 **menú por categorías** navegable con un único botón. Las tres opciones del modo de trabajo, a la
-vista. Y si te olvidas el menú abierto, **se cierra solo a los 20 segundos** avisando con una
-cuenta atrás.
+vista. Y si te olvidas el menú abierto, **se cierra solo** avisando con una cuenta atrás: a los
+**20 segundos** en las Faketec, y a los **15** en el T-Echo.
+
+🔤 **Tres tamaños de letra (T-Echo).** La pantalla de tinta estrena un tercer tamaño, y no es un
+capricho: es una letra **más estrecha** que la grande. Tiene la misma altura, así que se lee igual
+de lejos, pero ocupa menos a lo ancho. Con la letra grande, textos del menú como
+**`Finalizar guiado`** **no cabían** y se cortaban; con esta, sí caben. Es la letra **DIN 1451** del
+firmware alemán del T-Echo (de **Thomas Kolb, cfr34k**), que es de licencia **MIT**.
 
 🔧 **Configurador web, sin instalar nada.** Un **solo fichero** que habla con el nodo por USB desde
 Chrome o Edge: lee la configuración real del aparato, la edita con **ayuda en cada casilla** y te
@@ -90,6 +96,15 @@ pantalla del nodo.
 🔌 **También es un módem (TNC).** Conectado por USB puede hacer de **TNC en modo KISS** (lo que
 piden APRSdroid y las apps modernas) o **TNC2** (texto, para programas clásicos). En modo KISS
 **manda la aplicación** y el nodo se calla: solo repite y transmite lo que le entreguen.
+
+🧭 **Te guía por una ruta (T-Echo).** El T-Echo lleva la ruta en la pantalla: una **flecha** que te
+dice hacia dónde tirar, **cuánto te desvías** de la línea y **cuánto te queda**. Y guarda por dónde
+pasas para poder **volver sobre tus pasos**: «Volver a casa» te devuelve por donde viniste. Está
+contado entero, **con sus límites**, en [Guiado por tracks](#-guiado-por-tracks-y-vuelta-a-casa-t-echo).
+
+🔌 **Se puede apagar a mano.** Una opción del menú **apaga el nodo de verdad** (no lo duerme): se
+apaga del todo y se enciende otra vez con el botón de reset. Viene bien para no andar publicando
+posiciones de interior mientras está cargando. Igual que el dormir, **solo está en el T-Echo**.
 
 🌍 **Habla el idioma de la red.** 433,775 MHz · SF12 · 125 kHz · CR 4/5, con el mismo entramado que
 el resto del ecosistema LoRa APRS. Aparece en **aprs.fi**, findu y los mapas LoRa como cualquier
@@ -217,6 +232,88 @@ mientras tanto el nodo avisa de que está buscando satélites.
 
 ---
 
+## 🧭 Guiado por tracks y vuelta a casa (T-Echo)
+
+Esto **no adivina** hacia dónde tienes que ir: te sigue por una ruta que ya existe. Y esa ruta sale
+de dos sitios distintos:
+
+| De dónde sale la ruta | Para qué sirve | Cuánto cabe |
+|---|---|---|
+| 📍 **El track en vivo**: lo graba el nodo solo, desde que coge posición | **Volver sobre tus pasos**, «Volver a casa» | Unos **80 km** de camino. Parado, unos **136 h** (casi 6 días) |
+| 📥 **Cinco rutas cargadas** a mano, de un GPX que te bajas de internet | Que el nodo **te guíe** por una ruta de otro | Unos **17 km** cada una |
+
+### El track en vivo: por dónde has pasado
+
+El nodo **va grabando tu camino sin que hagas nada**: guarda un punto cada **10 metros** andando, y
+uno cada **60 segundos** si estás parado. No hay que darle a nada.
+
+Cuando la memoria del track se llena, **empieza a borrar por el principio**. Es lo normal en un
+aparato que no sabe cuánto va a durar la ruta, pero conviene saberlo: si das la vuelta entera al
+track, el punto de salida ya no es el de verdad. **La pantalla te avisa** con `Inicio perdido`
+cuando eso ha pasado.
+
+### Las cinco rutas que te bajas
+
+Además del track en vivo hay **5 ranuras** para rutas tuyas. Te bajas un GPX (por ejemplo de
+WikiLoc) y lo cargas desde el **configurador web**, en la pestaña **Guiado**. Si el GPX trae más
+puntos de los que caben, **el configurador lo simplifica solo** antes de mandarlo.
+
+Cada ranura aguanta unos **17 km** de ruta. En la pantalla no se guardan con nombre: aparecen por
+**número, fecha y hora** de cuando las cargaste.
+
+### La pantalla de guiado
+
+- 🧭 **La flecha** de la brújula: hacia dónde tirar.
+- 📈 **La línea de la ruta**: de cerca (para navegar) o entera (para ver el plano general). **Una
+  pulsación corta cambia de una a otra.**
+- 📏 **Cuánto te desvías** de la ruta y **cuánto te queda** por ella.
+- ⛰️ **La altitud** y tus **coordenadas**.
+
+> ⚠️ **Parado no sale flecha: sale `ANDA UNOS PASOS`.** Y no es un fallo. Quieto, el GPS **no sabe
+> hacia dónde miras**, así que una flecha sería una adivinanza. Es lo que hace cualquier GPS que no
+> lleve brújula. Te mueves unos pasos y la flecha vuelve.
+
+> ⚠️ **Si te desvías más de 500 m, la flecha sigue saliendo**, pero apunta **de vuelta a la ruta**.
+> Es justo cuando más falta hace.
+
+> ⚠️ **Guiar deja de grabar tu track.** Mientras te guía por una ruta, el nodo **no sigue apuntando
+> por dónde vas**, y lo dice en la pantalla con `NO GRABA`. Al terminar hay que entrar en
+> **«Finalizar guiado»** para que vuelva a grabar. Es fácil de olvidar, así que el aviso está a la
+> vista.
+
+### En el menú (T-Echo)
+
+| Opción | Qué hace |
+|---|---|
+| **Track en vivo** | Los puntos que llevas grabados y **desde cuándo** |
+| **Empezar nuevo** | **Tira el track en vivo y empieza uno desde donde estás.** Hace falta: si no, «Volver a casa» te mandaría al principio del track viejo (por ejemplo, a tu casa) en vez de a donde has dejado el nodo |
+| **Las 5 ranuras** | Eliges cuál de las rutas que tienes cargadas quieres seguir |
+| **Volver a casa** | Te lleva de vuelta por donde viniste |
+| **Finalizar guiado** | Se acaba la guía **y el nodo vuelve a grabar** tu track |
+
+> ⚠️ **Esto es solo de las placas T-Echo y T-Echo Plus.** Las Faketec **no** lo llevan: su memoria
+> no está repartida igual y no se ha comprobado que quepa ahí. El propio firmware lo dice: las
+> Faketec se quedan como están.
+>
+> Y del **T-Echo normal** y el **Plus**, lo lleva el **Plus**; en el T-Echo normal, **está pendiente
+> de probar en el aparato**.
+
+### 🔌 Apagar a mano (T-Echo)
+
+En el menú principal, la opción **«Apagar»** hace lo que dice: **apaga el nodo de verdad**. Es
+distinto de «Dormir»:
+
+- **Dormir**: el nodo se despierta solo con el botón, o cuando la tensión de la batería vuelve a
+  subir. Es lo que se usa en un nodo solar.
+- **Apagar**: se apaga y **no vuelve solo**. **Se enciende otra vez con el botón de reset** (o
+  quitando la alimentación y volviéndola a poner).
+
+Antes de apagarse pide **confirmación** (`APAGAR`), suena un aviso, deja escrito **`APAGADO A MANO`**
+en la pantalla y se corta. Para qué sirve, en la práctica: tener el nodo **cargando dentro de casa
+sin que ande publicando posiciones de interior**, o guardarlo sabiendo que no gasta nada.
+
+---
+
 ## 🎛️ Los tres modos de trabajo
 
 | Modo | Qué hace |
@@ -285,7 +382,8 @@ juntos:
 | 📡 **Kacho System** (este) | El **firmware del nodo APRS-LoRa de 433 MHz**: repetidor y rastreador |
 | ⚙️ **[Configurador web](https://github.com/EA2OY/CONFIGURADOR-WEB-APRS-EA2OY)** | El configurador, servido como página web (WebSerial y el mapa lo necesitan) |
 | 🏔️ **[NavaTastic](https://github.com/EA2OY/NavaTastic)** | El **firmware del repetidor solar de Meshtastic** para infraestructura de montaña |
-| 📱 **[MeshNavarra Utility](https://github.com/EA2OY/MeshNavarra-Utility)** | La **app Android** para administrar nodos Meshtastic/NavaTastic |
+| 📱 **APRS LoRa EA2OY** (app Android) | La **app del móvil para este nodo**, por **cable USB-OTG o Bluetooth**: leer y cambiar la configuración, mandar balizas, ver la consola, cargar rutas y actualizar el firmware del nodo. Es lo que sustituye al configurador web **en el móvil**, donde el navegador no deja hablar con el USB. **Todavía no está publicada**: vive en la carpeta `_app_android` del proyecto y los APK son de pruebas (sin firmar) |
+| 📱 **[MeshNavarra Utility](https://github.com/EA2OY/MeshNavarra-Utility)** | La **app Android** para administrar nodos **Meshtastic/NavaTastic**. **No es la de este nodo**: es otro proyecto, para otra red |
 | 🎮 **[Kacho Contest System](https://github.com/EA2OY/KachoContestSystem-demo)** | El **sistema de pulsadores** para concursos y eventos |
 
 **Nada de esto se necesita para lo otro**: cada proyecto funciona solo. Pero **APRS y Meshtastic se
@@ -400,6 +498,17 @@ iGate to hear it in order to reach the map. That is by design.
   [online](https://ea2oy.github.io/CONFIGURADOR-WEB-APRS-EA2OY/) (Chrome/Edge over USB).
 - ✉️ **APRS messaging** with acks and retries, bulletins and objects.
 - 🔌 **USB TNC** in **KISS** or **TNC2** mode, for APRSdroid and friends.
+- 🧭 **Route guidance (T-Echo)**: the screen shows a **compass arrow**, how far you are **off the
+  route** and **how much is left**, and the node keeps **where you have been** so you can walk back
+  the way you came. All of it, **limits included**, is in
+  [Route guidance](#-route-guidance-and-back-home-t-echo).
+- ⏻ **Manual power off**: a menu option **really turns the node off** (it does not sleep). It comes
+  back with the reset button. Same as sleep, **T-Echo only**.
+- 🔤 **Three text sizes (T-Echo)**: the e-paper screen gains a third size, a **narrower** letter.
+  Same height as the large one, so it reads just as well from a distance, but it takes less width.
+  With the large letter, menu items such as **`Finalizar guiado`** **did not fit** and were cut off;
+  with this one they do. It is the **DIN 1451** font from the German T-Echo firmware (by
+  **Thomas Kolb, cfr34k**), which is **MIT** licensed.
 
 ### Supported boards
 
@@ -414,6 +523,92 @@ The T-Echo carries an **e-paper display**, and **both boards drive it** (scenes 
 menu). What only the **T-Echo Plus** adds is that board's **vibration/sound alerts**. The T-Echo
 needs an **S140 version 7 bootloader** (check `INFO_UF2.TXT` on the flashing drive); the version 6
 bootloader is not supported by the published files.
+
+### 🧭 Route guidance and back home (T-Echo)
+
+> 📣 **The whole node screen speaks Spanish.** Menus, warnings and every message on the e-paper
+> display are written in Spanish, so the words are quoted here exactly as they appear on screen,
+> with the English in brackets. `ANDA UNOS PASOS` means "take a few steps"; it is not an error
+> message. This README's English half translates the Spanish text, but not the screen itself.
+
+This does **not guess** where you should go: it follows a route that already exists. And that route
+comes from two different places:
+
+| Where the route comes from | What it is for | How much fits |
+|---|---|---|
+| 📍 **The live track**: the node records it on its own, as soon as it gets a fix | **Walking back the way you came**, "Back home" | About **80 km** of walking. Standing still, about **136 h** (nearly 6 days) |
+| 📥 **Five routes loaded by hand**, from a GPX you download | The node **guides you** along somebody else's route | About **17 km** each |
+
+#### The live track: where you have been
+
+The node **records your route on its own, without you doing anything**: it stores one point every
+**10 metres** while you walk, and one every **60 seconds** while you stand still.
+
+When the track memory fills up, it **starts deleting from the beginning**. That is normal in a
+device that does not know how long your route will be, but you should know it: if you wrap all the
+way round, the starting point is no longer the real one. **The screen warns you** with
+`Inicio perdido` ("start lost") when that has happened.
+
+#### The five routes you download
+
+Besides the live track there are **5 slots** for your own routes. You download a GPX (from WikiLoc,
+for example) and load it from the **web configurator**, on the **Guidance** tab. If the GPX has more
+points than fit, **the configurator simplifies it for you** before sending it.
+
+Each slot holds about **17 km** of route. Slots are not saved with a name: they show up as a
+**number, date and time** from when you loaded them.
+
+#### The guidance screen
+
+- 🧭 **The compass arrow**: which way to go.
+- 📈 **The route line**: close up (for navigating) or the whole thing (to see the general picture).
+  **A short press switches between the two.**
+- 📏 **How far off the route** you are, and **how much is left** along it.
+- ⛰️ **Altitude** and your **coordinates**.
+
+> ⚠️ **Standing still you get no arrow: you get `ANDA UNOS PASOS` ("TAKE A FEW STEPS").** That is
+> not a fault. When you are not moving, the GPS **does not know which way you are facing**, so an
+> arrow would be a guess. Every GPS without a compass does the same. Walk a few steps and the
+> arrow comes back.
+
+> ⚠️ **If you drift more than 500 m off the route, the arrow still shows**, but it points **back to
+> the route**. That is exactly when you need it most.
+
+> ⚠️ **Guiding stops your track being recorded.** While it guides you along a route, the node **is no
+> longer recording where you go**, and it says so on screen with `NO GRABA` ("NOT RECORDING"). When
+> you finish you have to go into **"Finalizar guiado" / "End guidance"** so it starts recording
+> again. It is easy to forget, which is why the warning is on screen.
+
+#### In the menu (T-Echo)
+
+| Option | What it does |
+|---|---|
+| **Track en vivo** | The points recorded so far and **since when** |
+| **Empezar nuevo** | **Throws away the live track and starts a new one from where you are.** You need this: otherwise "Back home" would take you to the start of the old track (your house, for instance) instead of where you left the node |
+| **The 5 slots** | Pick whichever of the routes you have loaded |
+| **Volver a casa** | Takes you back the way you came |
+| **Finalizar guiado** | Guidance ends **and the node starts recording your track again** |
+
+> ⚠️ **This is T-Echo and T-Echo Plus only.** Faketec boards do **not** have it: their memory is not
+> laid out the same way and it has not been checked that it fits there. The firmware itself says so:
+> Faketec boards stay as they are.
+>
+> And of the **plain T-Echo** and the **Plus**, it ships on the **Plus**; on the plain T-Echo it is
+> **still to be tested on the device**.
+
+#### ⏻ Manual power off (T-Echo)
+
+In the main menu, **"Apagar"** does exactly what it says: it **really turns the node off**. It is not
+the same as "Dormir" (sleep):
+
+- **Sleep**: the node wakes up on its own with the button, or when the battery voltage comes back up.
+  That is what a solar node uses.
+- **Power off**: it goes off and **does not come back on its own**. **You turn it on again with the
+  reset button** (or by removing and reconnecting power).
+
+Before switching off it asks for **confirmation** (`APAGAR`), beeps, writes **`APAGADO A MANO`** on
+the screen and cuts out. What it is for, in practice: leaving the node **charging indoors without it
+publishing indoor positions**, or putting it away knowing that it draws nothing.
 
 ### Firmware files (the four published files, and who each one is for)
 

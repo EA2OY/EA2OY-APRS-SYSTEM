@@ -14,18 +14,26 @@
 //
 //    0x027000  aplicacion            (el b96 acababa en 0x81A58)
 //    0x081A58  ... margen para que la aplicacion crezca .. 89 KB
-//    0x098000  TRACK EN VIVO   80 KB  (20 paginas)  = 8160 puntos, 81 km a 10 m/punto
-//    0x0AC000  RANURA 1        20 KB  ( 5 paginas)  = 2040 puntos
-//    0x0B1000  RANURA 2        20 KB
-//    0x0B6000  RANURA 3        20 KB
-//    0x0BB000  RANURA 4        20 KB
-//    0x0C0000  RANURA 5        20 KB
-//    0x0C5000  (12 KB sin usar)
+//    0x098000  CABECERA del track en vivo   1 pagina ENTERA (4 KB) -- ver la nota de abajo
+//    0x099000  TRACK EN VIVO   80 KB  (20 paginas)  = 6800 puntos, 68 km a 10 m/punto
+//    0x0AD000  RANURA 1        20 KB  ( 5 paginas)  = 1698 puntos, 17 km
+//    0x0B2000  RANURA 2        20 KB
+//    0x0B7000  RANURA 3        20 KB
+//    0x0BC000  RANURA 4        20 KB
+//    0x0C1000  RANURA 5        20 KB
+//    0x0C6000  (8 KB sin usar)
 //    0x0C8000  registro de viaje 128 KB (32 paginas, SU anillo)  <-- SIGUE IGUAL
 //    0x0E8000  config (2 paginas)
 //    0x0ED000  sistema de ficheros interno (DENTRO del cargador: NO se puede mover)
 //    0x0F4000  cargador
 //    0x0FF000  ajustes del cargador
+//
+//  ★★ ESTOS NUMEROS SE QUEDARON VIEJOS UNA VEZ, Y ESO HIZO DAÑO (2026-10-05) ★★
+//    Cuando el punto paso de 10 a 12 bytes (ver `TRACK_PUNTO_STRIDE`, mas abajo) la capacidad
+//    cambio de 8160 a 6800 puntos y las direcciones se movieron 4 KB, pero **los comentarios no se
+//    tocaron**. Y un revisor que SI leyó los comentarios publico en el README «unos 80 km» cuando
+//    el aparato hace 68. La leccion: **al cambiar un numero en el codigo, se buscan sus copias en
+//    los comentarios**. El valor bueno es SIEMPRE el de la macro, no el del comentario.
 //
 //  ★ POR QUE LOS TRACKS VAN *ANTES* DEL REGISTRO DE VIAJE Y NO DESPUES: despues del registro
 //    esta la config (0xE8000) y, pegado, el sistema de ficheros interno del core (0xED000),
@@ -37,9 +45,10 @@
 //    aplicacion (0x082000) y la guarda del generador de UF2 dijo que al margen de la app le
 //    quedaban **1,4 KB**, o sea que el menu y la pantalla de navegacion habrian chocado con los
 //    tracks del usuario. Bajarlos a 0x098000 deja 89 KB de margen para la aplicacion **sin
-//    quitarle un byte al registro de viaje**. Eso si: las ranuras se quedan en 2040 puntos, que
-//    para un track de WikiLoc simplificado sigue dando de sobra (una ruta de 20 km muestreada
-//    cada 10 m son 2000 puntos).
+//    quitarle un byte al registro de viaje**. Eso si: las ranuras se quedan en **1698 puntos**
+//    (eran 2040 con paso de 10 bytes por punto; al pasar a 12 bajaron), que para un track de
+//    WikiLoc simplificado sigue dando de sobra: una ruta de 17 km muestreada cada 10 m son 1700
+//    puntos, y el configurador la simplifica sola antes de mandarla.
 //
 //  ★★ EL PROBLEMA DEL TRACK EN VIVO, QUE HAY QUE ENTENDER ★★
 //    El track en vivo tambien es un anillo (tiene que serlo: no se sabe cuanto va a durar la
@@ -48,13 +57,18 @@
 //    seria el peor fallo posible: el nodo te llevaria a un punto que ya no es el inicio.
 //    POR ESO EL ANILLO CUENTA LAS VUELTAS: cuando da la primera, se marca y quien navegue
 //    AVISA en vez de mentir.
-//    ★ LOS NUMEROS DE VERDAD (corregidos el 2026-09-22; antes ponia "12288 puntos" y
-//      "~13,6 horas", que eran de una version con 30 paginas):
-//        20 paginas x 408 puntos = 8160 puntos
-//        a 1 punto cada 10 m  -> 81,6 km de ruta (unas 20 h andando a 4 km/h)
-//        a 1 punto cada 60 s  -> 136 horas parado
+//    ★ LOS NUMEROS DE VERDAD, y ya van TRES correcciones (la ultima el 2026-10-05):
+//      - Primero ponia "12288 puntos / ~13,6 h", de una version con 30 paginas. Mal.
+//      - Luego "8160 puntos / 81,6 km", que era correcto con paso de 10 bytes por punto.
+//      - Y **al pasar el punto a 12 bytes** (ver `TRACK_PUNTO_STRIDE`) la capacidad bajo a
+//        **6800 puntos = 68 km**, y estos comentarios se quedaron con el numero viejo. Eso hizo
+//        que un revisor publicara "80 km" en el README. De ahi la nota de arriba.
+//      LOS DE AHORA (con paso 12): 4088/12 = 340 puntos por pagina
+//        20 paginas x 340 puntos = 6800 puntos
+//        a 1 punto cada 10 m  -> 68,0 km de ruta (unas 17 h andando a 4 km/h)
+//        a 1 punto cada 60 s  -> 113 horas parado (4,7 dias)
 //      Es decir: una ruta de un dia NO da la vuelta, pero un nodo olvidado encendido en casa
-//      SI (a 1 punto/60 s son ~5,7 dias), y ahi es donde importa el aviso.
+//      SI (4,7 dias parado), y ahi es donde importa el aviso.
 // ===========================================================================
 
 #pragma once
@@ -99,7 +113,8 @@
 //    6..7  puntos validos en esta pagina
 // Los puntos van detras, consecutivos, 10 bytes cada uno. El hueco que sobra detras del
 // ultimo punto esta BORRADO (0xFF) y se puede seguir escribiendo sin borrar la pagina.
-//   -> 4096 - 8 = 4088 bytes utiles = 408 puntos JUSTOS, sin desperdicio ni relleno.
+//   -> 4096 - 8 = 4088 bytes utiles; con paso de 12 son 340 puntos (8 bytes de sobra al
+//      final de cada pagina, que no se usan).
 #define TRACK_MAGIC        0x31524B54u   // 'TRK1' en little-endian
 #define TRACK_PAG_HDR      8u
 
@@ -155,7 +170,7 @@ static_assert(TRACK_PUNTO_STRIDE % 4u == 0u,
 
 // Cuantos puntos caben DE VERDAD en cada zona. La cuenta sale de las constantes de arriba y no
 // se escribe a mano en ningun otro sitio, para que no haya dos numeros que puedan discrepar.
-#define TRACK_VIVO_PUNTOS  (TRACK_VIVO_PAGINAS * TRACK_PUNTOS_PAGINA)   // 8160
+#define TRACK_VIVO_PUNTOS  (TRACK_VIVO_PAGINAS * TRACK_PUNTOS_PAGINA)   // 6800
 
 // ★★ EL TOPE DE UNA RANURA, CALCULADO AQUI Y NO DE MEMORIA (2026-09-22) ★★
 //   Estaba puesto como `TRACK_SLOT_PAGINAS * TRACK_PUNTOS_PAGINA` = 2040, o sea como si las 5
@@ -265,7 +280,7 @@ bool     tracksVivoGrabando();
 //   constancia de que sigues ahi). Por que asi:
 //     - guardando por TIEMPO, un tramo lento (subiendo) se llena de puntos y uno rapido
 //       (bajando) queda vacio; el track no representa la ruta, representa el reloj;
-//     - con 10 m, los 8.160 puntos del anillo dan para **81 km de ruta**, y una ruta de
+//     - con 10 m, los 6.800 puntos del anillo dan para **68 km de ruta**, y una ruta de
 //       montana de un dia entero son 15-30 km: sobra mas del doble.
 //   Es la misma idea que usa cualquier GPS para grabar tracks.
 void     tracksTick(uint32_t nowMs);
