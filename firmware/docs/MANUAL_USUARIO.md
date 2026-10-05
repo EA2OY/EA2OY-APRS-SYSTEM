@@ -744,7 +744,7 @@ Cuando llega o sale tráfico, encima de la escena sale un **aviso** de un par de
 
 ## El menú, sección por sección
 
-Son también **catorce secciones**. La diferencia con el de la OLED está en los detalles
+Son también **quince secciones**. La diferencia con el de la OLED está en los detalles
 que se marcan aquí:
 
 ### Modo
@@ -893,6 +893,15 @@ reset), y una fila **Salir** arriba y otra a media lista.
 > algo. Se dejan a la vista para que el menú sea igual que el de la otra placa, pero
 > avisando.
 
+### Tracks
+
+Es lo del guiado, explicado largo mas arriba (ver «Guiarte por un track»). Aqui solo, lo que hace
+cada fila:
+
+- **Track en vivo** — abre la lista de tracks por tu track grabado.
+- **Ranuras: N/5** — abre la lista de tracks por las ranuras, y dice cuantas tienes cargadas.
+- **Volver a casa** — te guia de vuelta por tu track en vivo, al reves. Es el atajo.
+
 ## Cómo se navega y cómo se cambian los valores
 
 - **Táctil**: mueve el cursor por la lista, y **cambia el valor** cuando estás dentro de
@@ -1009,6 +1018,163 @@ Cuatro detalles que conviene saber:
 ---
 
 # La posición: el GPS en la práctica
+
+## Guiarte por un track: seguir una ruta y «volver a casa»
+
+Esta es la parte que sirve para **caminar siguiendo una ruta** que te has preparado antes, o para
+**volver por donde has venido**. El aparato no lleva mapas: lo que hace es decirte **hacia dónde
+tienes que tirar** y **cuánto te desvías** de la ruta que le has cargado.
+
+### Las dos clases de track que hay, y en qué se diferencian
+
+**1. El track en vivo: lo que grabas tú, sin hacer nada.**
+
+El nodo va apuntando por dónde pasas **desde que coge posición**, sin que le digas nada. Un punto
+cada 10 metros andando, y uno cada minuto si estás parado. En total caben unos **68 km** de ruta:
+cuando se llena, empieza a borrar por el principio (lo viejo) para seguir apuntando.
+
+No hace falta activarlo ni acordarse de nada. **Está grabando desde que enciende.**
+
+**2. Las cinco ranuras: rutas que te bajas de internet.**
+
+En el configurador web puedes cargar hasta **cinco rutas** hechas por ti (por ejemplo, un GPX que
+te hayas bajado de WikiLoc). Cada una cabe en una ranura, y cada ranura aguanta unas **17 km** de
+ruta. Estas no se graban solas: las metes tú desde el ordenador.
+
+### Antes de nada: «Empezar nuevo»
+
+**Esto es lo primero que hay que hacer al llegar al sitio donde empieza la excursión.**
+
+El nodo graba desde que enciende, así que si lo has tenido encendido en casa o en el coche, tu
+track en vivo **ya tiene puntos de antes** — y el principio de ese track es tu casa, no donde has
+aparcado. Si luego le pides «volver a casa», te llevaría... a tu casa de verdad, que no es lo que
+quieres.
+
+Para arreglarlo: abre el menú, entra en **Tracks**, ponte en **Empezar nuevo** y pulsa. El aparato
+te pregunta si estás seguro (porque borra lo que había) y, si dices que sí, **empieza un track
+nuevo desde donde estás**. A partir de ahí, el principio del track eres tú, ahí de pie.
+
+Hazlo **una vez al llegar**, y ya está.
+
+### El menú de Tracks
+
+Se entra desde el menú principal, en la sección **Tracks**. Dentro hay una lista:
+
+| Lo que ves | Lo que es |
+|---|---|
+| `12/07 18:42` | Tu track en vivo, con la fecha y la hora en que empezó |
+| `Sin hora GPS` | Tu track en vivo, pero el GPS todavía no había dado la hora cuando empezó |
+| `NO GRABA` | Hay un track en vivo, pero **en este momento no está grabando** (ver más abajo) |
+| `Empezar nuevo` | Borra el track en vivo y empieza uno desde donde estás |
+| `1  12/07 18:42` | La ranura 1, con la fecha en que la cargaste |
+| `2  Vacía` | La ranura 2 está vacía |
+| `Volver a casa` | Te guía de vuelta por tu track en vivo, al revés |
+
+Las ranuras van numeradas del 1 al 5 para que no se confundan entre ellas cuando las cargas todas
+el mismo día.
+
+### Seguir una ruta: «Hacia adelante» y «Hacia atrás»
+
+Elige en la lista el track que quieras seguir (el vivo o una ranura) y pulsa. Sale un menú con:
+
+- **Hacia adelante** — te guía por la ruta **en su sentido normal**.
+- **Hacia atrás** — te guía por la ruta **al revés**, del final al principio.
+- **Finalizar guiado** — deja de guiarte.
+
+### «Volver a casa»
+
+Es un atajo: **te guía de vuelta por tu track en vivo, al revés**. Sirve para lo típico: has subido
+al monte por un camino y quieres volver por el mismo sitio sin equivocarte en los cruces.
+
+Para que salga bien, acuérdate de **«Empezar nuevo» al llegar**.
+
+### La pantalla de guiado
+
+Mientras te está guiando, la pantalla te enseña esto:
+
+```
+ADELANTE  rumbo 245          <- el sentido, y hacia donde miras tú
+┌──────────────────────────┐
+│  ↗      ····             │  <- la flecha: hacia donde tienes que ir
+│         ····  ────────   │  <- la ruta: a rayas lo que queda,
+│      ✛  ····             │     entera lo que ya has andado
+└──────────────────────────┘
+────────────────────────────
+DESV   18 m                  <- cuanto te has apartado de la ruta
+FALTAN 2.40 km               <- lo que te queda POR LA RUTA
+ALT 1420 m                   <- la altitud
+42.80413 -2.12345            <- tus coordenadas
+```
+
+- La **cruz** (`✛`) eres tú. Si la cruz se va de la línea de puntos, es que te has salido.
+- La **flecha** te dice hacia dónde tirar. Si te desvías mucho, la flecha **apunta de vuelta a la
+  ruta**, que es justo lo que hace falta en ese momento.
+- **`FALTAN` es lo que queda por la ruta**, no la distancia en línea recta. Si la ruta da una
+  vuelta a un barranco, pone más de lo que parece en el mapa. Es lo correcto, porque es lo que vas
+  a andar.
+
+**Una pulsación corta cambia entre la vista de cerca y la vista del track entero.** La de cerca
+enseña el trozo que tienes alrededor (más o menos kilómetro y medio); la entera, toda la ruta de
+un vistazo.
+
+### Lo que la flecha te va a decir, y por qué
+
+La flecha **no siempre sale**, y no es un fallo. Sale un aviso en su lugar:
+
+| Si pasa esto | Verás | Por qué |
+|---|---|---|
+| No hay cobertura del GPS | `SIN GPS` | Sin posición no se puede saber hacia dónde ir |
+| Estás parado (menos de 1 km/h) | `ANDA UNOS PASOS` | Ver abajo |
+| Estás a menos de 25 m del final | `LLEGADA` | Ya has llegado |
+
+**`ANDA UNOS PASOS` es lo más importante de entender.** El GPS **no sabe hacia dónde miras**: lo
+que sabe es hacia dónde te has estado moviendo. Parado, no tiene ni idea. Así que el aparato, en
+vez de inventarse una flecha (que te mandaría al sitio contrario con toda su confianza), te pide
+que andes unos metros. Anda tres o cuatro pasos y la flecha aparece.
+
+Es una limitación del GPS, no del aparato: **todos los GPS sin brújula magnética hacen lo mismo.**
+Pero conviene saberlo, porque en un cruce es justo cuando uno se para a mirar.
+
+### Si sales a guiar, deja de grabar
+
+**Cuando el aparato te está guiando, deja de grabar tu track en vivo.** Es a propósito: si grabara
+mientras te guía, la ruta que estás siguiendo cambiaría mientras la sigues, y en «volver a casa»
+le estarías añadiendo la vuelta al camino de ida.
+
+Por eso, cuando pases a la lista de Tracks y no esté grabando, verás **`NO GRABA`** en tu track en
+vivo. **Si quieres seguir grabando, dale a «Finalizar guiado».** Si te olvidas, no se graba nada de
+ese rato, y el aviso está ahí para que te enteres.
+
+### Cargar una ruta desde el ordenador
+
+1. Abre el **configurador web** (Chrome o Edge de escritorio) y conecta el nodo por USB.
+2. Ve a la pestaña **Guiado**.
+3. Elige el fichero **GPX** (el que te has bajado de WikiLoc).
+4. El configurador te dice cuántos puntos trae y en cuántos se queda al simplificarlo. **No hay que
+   hacer nada**: si trae más de los que caben, los reduce solo, quitando los que no aportan nada y
+   **conservando las curvas**.
+5. Elige en qué **ranura** lo quieres meter (1 a 5) y pulsa **Mandar al nodo**.
+6. Verás una barra de progreso. Cuando acabe, la ranura aparece en la lista del aparato.
+
+**El límite de puntos lo dice el propio nodo**, así que el configurador no puede equivocarse. Y si
+una ruta no cabe, **te lo dice con el motivo, no la recorta en silencio**.
+
+### Cosas que conviene saber
+
+- **El track en vivo guarda unos 68 km.** Cuando se llena, empieza a borrar por el principio: el
+  inicio de tu ruta se pierde. Para una excursión de un día no llega a llenarse, pero si dejas el
+  nodo encendido en casa varios días, sí. Por eso, si vas a usar «volver a casa», hazlo **el mismo
+  día**.
+- **Si el track en vivo ha dado la vuelta**, el aparato te avisa con **`Inicio perdido`** cuando le
+  pides que te lleve de vuelta: significa que el principio de tu ruta ya no está, y que te llevará
+  a un punto del recorrido que no es donde empezaste. Más vale saberlo que descubrirlo andando.
+- **Al arrancar el nodo, no se puede saber si el track había dado la vuelta.** Esa cuenta se pierde
+  al apagar. Si acabas de encender y usas «volver a casa», el aviso puede no salir aunque el
+  principio ya no esté.
+- **Guiar con una ranura no estropea tu track en vivo**: se para de grabar mientras dura, y sigue
+  donde lo dejó cuando le das a «Finalizar guiado».
+- **La pantalla de guiado no se cierra sola.** Se queda hasta que tú sales (pulsación larga). Las
+  demás pantallas del menú sí se cierran solas a los 15 segundos.
 
 ## La antena es lo más importante
 
