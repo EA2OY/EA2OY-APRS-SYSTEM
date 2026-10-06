@@ -382,13 +382,49 @@ juntos:
 | 📡 **Kacho System** (este) | El **firmware del nodo APRS-LoRa de 433 MHz**: repetidor y rastreador |
 | ⚙️ **[Configurador web](https://github.com/EA2OY/CONFIGURADOR-WEB-APRS-EA2OY)** | El configurador, servido como página web (WebSerial y el mapa lo necesitan) |
 | 🏔️ **[NavaTastic](https://github.com/EA2OY/NavaTastic)** | El **firmware del repetidor solar de Meshtastic** para infraestructura de montaña |
-| 📱 **APRS LoRa EA2OY** (app Android) | La **app del móvil para este nodo**, por **cable USB-OTG o Bluetooth**: leer y cambiar la configuración, mandar balizas, ver la consola, cargar rutas y actualizar el firmware del nodo. Es lo que sustituye al configurador web **en el móvil**, donde el navegador no deja hablar con el USB. **Todavía no está publicada**: vive en la carpeta `_app_android` del proyecto y los APK son de pruebas (sin firmar) |
+| 📱 **[APRS LoRa EA2OY](apk/APRS_LoRa_EA2OY_0.7.0-fase6.apk)** (app Android) | La **app del móvil para este nodo**, por **cable USB-C a USB-C**: leer y cambiar la configuración, mandar balizas, ver la consola, cargar rutas y actualizar el firmware del nodo. Es lo que sustituye al configurador web **en el móvil**, donde el navegador no deja hablar con el USB. **Descarga y detalles, más abajo** |
 | 📱 **[MeshNavarra Utility](https://github.com/EA2OY/MeshNavarra-Utility)** | La **app Android** para administrar nodos **Meshtastic/NavaTastic**. **No es la de este nodo**: es otro proyecto, para otra red |
 | 🎮 **[Kacho Contest System](https://github.com/EA2OY/KachoContestSystem-demo)** | El **sistema de pulsadores** para concursos y eventos |
 
 **Nada de esto se necesita para lo otro**: cada proyecto funciona solo. Pero **APRS y Meshtastic se
 complementan**: el APRS llega a los mapas y a los visores de radioaficionado, y Meshtastic da
 mensajería de malla. Muchos nodos conviven con los dos.
+
+---
+
+## 📱 La app Android: el nodo, en el bolsillo
+
+El configurador web es muy cómodo, pero tiene un problema que no se puede arreglar: **un navegador
+no puede hablar con el USB**. Y en el monte no llevas el ordenador: llevas el móvil.
+
+**«APRS LoRa EA2OY» es la app de este nodo.** Se conecta con **cable USB-C a USB-C** (el del
+cargador del móvil sirve) y hace lo mismo que el configurador, pero desde el teléfono:
+
+| Lo que puedes hacer | Para qué te sirve |
+|---|---|
+| **Ver el estado del nodo** | Si tiene fijación, cómo va la batería, qué está oyendo |
+| **Leer y cambiar la configuración** | Los mismos ajustes que en la web, con sus avisos |
+| **Mandar una baliza** | Publicar tu posición sin esperar a que le toque |
+| **Ver la consola** | Lo que el nodo va diciendo, en directo |
+| **🗺️ Cargar una ruta y guidarte** | Elegir un GPX del teléfono, simplificarlo y meterlo en una ranura del nodo |
+| **Actualizar el firmware** | Grabar el nodo desde el móvil, sin ordenador |
+
+**La app lleva el manual dentro** (el mismo PDF de aquí abajo), así que se puede leer sin cobertura.
+
+> 🔌 **Hace falta cable, y es a propósito: nuestro firmware todavía no soporta Bluetooth.** Se
+> conecta por **USB-C a USB-C** al teléfono.
+
+### ⬇️ Descargar
+
+**[APRS_LoRa_EA2OY_0.7.0-fase6.apk](apk/APRS_LoRa_EA2OY_0.7.0-fase6.apk)** · 7,7 MB
+
+Descarga el fichero en el móvil, ábrelo y acepta el aviso de Android sobre instalar aplicaciones de
+fuera de la tienda.
+
+> ⚠️ **Es una versión de PRUEBAS**: no está en ninguna tienda y **va firmada con la clave de
+> depuración** (Android te avisará de eso al instalarla). Es una versión «alpha» del proyecto:
+> puede fallar y puede cambiar sin avisar. La app **no manda nada a ningún servidor**: habla solo
+> con el nodo que le conectes.
 
 ---
 
@@ -648,6 +684,23 @@ pio run -e faketec_sx1262_433   # or: faketec_e22p_433, techo_s140v7, techo_plus
 - 📕 **[User manual (PDF, Spanish)](assets/Manual_Kacho_System.pdf)**
 - 📥 **[Flashing the firmware, step by step (web, Spanish)](https://ea2oy.github.io/CONFIGURADOR-WEB-APRS-EA2OY/flasher.html)**
 - 📄 [`docs/`](docs) — features, configuration protocol, airtime analysis, T-Echo hardware
+
+### 📱 The Android app: the node, in your pocket
+
+**There is an app for this node** («APRS LoRa EA2OY»). It connects with a **USB-C to USB-C cable**
+(the phone charger cable will do) and does what the web configurator does, but from the phone: see
+the node status, read and change the settings, send a beacon, watch the console, **load a route and
+follow it**, and update the node firmware without a computer. **The manual is inside the app**, so
+you can read it with no signal.
+
+> 🔌 **A cable is required, and that is on purpose: our firmware does not support Bluetooth yet.**
+
+**[⬇️ Download APRS_LoRa_EA2OY_0.7.0-fase6.apk](apk/APRS_LoRa_EA2OY_0.7.0-fase6.apk)** · 7.7 MB
+
+Download it on the phone and open it; Android will warn you about installing apps from outside the
+store. ⚠️ **It is a TEST build**: not in any store and **signed with the debug key**. It is an
+«alpha» version of the project and may change. The app **sends nothing to any server**: it only
+talks to the node you plug in.
 
 ### License
 
