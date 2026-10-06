@@ -408,7 +408,7 @@ dialog .row{justify-content:flex-end}
     <section class="panel" id="panel-guide">
       <div class="card">
         <h2 data-i18n="guide_title">Tracks para guiarme</h2>
-        <p class="hint" data-i18n="guide_hint">Carga una ruta (un GPX de WikiLoc) y el nodo te guía por ella: brújula, desviación y lo que te falta. Caben 5 rutas, y cada una hasta 2040 puntos: si el GPX trae más, se simplifica solo aquí antes de mandarlo.</p>
+        <p class="hint" data-i18n="guide_hint">Carga una ruta (un GPX de WikiLoc) y el nodo te guía por ella: brújula, desviación y lo que te falta. Caben 5 rutas, y el tope de puntos de cada una te lo dice el nodo al entrar aquí: si el GPX trae más, se simplifica solo antes de mandarlo.</p>
 
         <div class="row">
           <label class="lbl" data-i18n="guide_pick">1. Elige el fichero GPX</label>
@@ -419,7 +419,10 @@ dialog .row{justify-content:flex-end}
 
         <div class="row">
           <label class="lbl" data-i18n="guide_simpl">2. Simplificar a</label>
-          <input type="number" id="guiaTope" value="2040" min="10" max="2040" step="10">
+          <!-- ★ El `value` y el `max` son SOLO el punto de partida: al abrir la pestaña se le
+               pregunta el tope al nodo y se pone el que diga. Se deja aqui el que hay hoy para no
+               ensenar un numero viejo mientras llega la respuesta. -->
+          <input type="number" id="guiaTope" value="1698" min="10" max="1698" step="10">
           <span data-i18n="guide_points">puntos</span>
         </div>
 
@@ -769,10 +772,17 @@ const I18N = {
     obj_empty:"Sin objetos enviados en esta sesión.",
     obj_sent:"Objeto enviado: ", obj_killed:"Objeto borrado: ", obj_need:"Rellena el nombre y las coordenadas.",
     /* ===== GUIADO POR TRACKS (2026-09-22) =====
-       OJO con el tope: el firmware guarda 2040 puntos por ranura y NO recorta en silencio: si
-       mandas mas, RECHAZA el track con el motivo. Por eso el aviso del tope esta a la vista. */
+       ★★ EL TOPE LO DICE EL NODO, Y AQUI NO SE CLAVA (2026-10-06) ★★
+       Estos textos decian el tope VIEJO (2040 puntos). El de verdad hoy es **1698**: al pasar el
+       punto de 10 a 12 bytes en la flash, bajo la capacidad. El codigo hacia lo correcto —le
+       pregunta el tope al nodo con `track_list` y actualiza el campo—, pero **la ayuda le decia
+       al usuario un numero que ya no era**: y un numero viejo en una ayuda hace que el operador
+       no se fie de lo que ve.
+       ★ AHORA EL TEXTO NO LLEVA NUMERO: dice que el tope lo pone el nodo, y el numero que sale
+         en pantalla es el que acaba de contestar. Asi no hay nada que se pueda quedar viejo.
+       Y NO se recorta en silencio: si mandas mas, el nodo RECHAZA el track con el motivo. */
     guide:"Guiado", guide_title:"Tracks para guiarme",
-    guide_hint:"Carga una ruta (un GPX de WikiLoc) y el nodo te guia por ella: brujula, desviacion y lo que te falta. Caben 5 rutas, y cada una hasta 2040 puntos: si el GPX trae mas, se simplifica solo aqui antes de mandarlo.",
+    guide_hint:"Carga una ruta (un GPX de WikiLoc) y el nodo te guia por ella: brujula, desviacion y lo que te falta. Caben 5 rutas, y el tope de puntos de cada una te lo dice el nodo al entrar aqui: si el GPX trae mas, se simplifica solo antes de mandarlo.",
     guide_pick:"1. Elige el fichero GPX", guide_file:"Ningun fichero",
     guide_simpl:"2. Simplificar a", guide_points:"puntos",
     guide_points_now:"El GPX trae", guide_points_seg:"puntos; simplificado quedaria en",
@@ -987,9 +997,12 @@ const I18N = {
     obj_send:"Send object", obj_kill:"Delete object", obj_name_ph:"NAME", obj_cmt_ph:"Comment",
     obj_empty:"No objects sent in this session.",
     obj_sent:"Object sent: ", obj_killed:"Object deleted: ", obj_need:"Fill in the name and the coordinates.",
-    /* ===== TRACK GUIDANCE (2026-09-22) ===== */
+    /* ===== TRACK GUIDANCE (2026-09-22) =====
+       ★ The point limit comes FROM THE NODE (see the Spanish note above): it used to say 2040
+       here, which was the old limit. The text no longer carries a number on purpose, so it can
+       never go stale again. */
     guide:"Guidance", guide_title:"Tracks to follow",
-    guide_hint:"Load a route (a WikiLoc GPX) and the node guides you along it: compass, off-track distance and what is left. Up to 5 routes, 2040 points each: if the GPX has more, it is simplified here before sending.",
+    guide_hint:"Load a route (a WikiLoc GPX) and the node guides you along it: compass, off-track distance and what is left. Up to 5 routes, and the node tells you the point limit for each one when you open this tab: if the GPX has more, it is simplified before sending.",
     guide_pick:"1. Pick the GPX file", guide_file:"No file",
     guide_simpl:"2. Simplify to", guide_points:"points",
     guide_points_now:"The GPX has", guide_points_seg:"points; simplified it would be",
@@ -3004,7 +3017,15 @@ function fechaValida(y, m, d){
    Con el primer punto bueno, la fecha y la hora del nombre del fichero son las
    de verdad. */
 const BOOT_RE = /(?:^|\s)EVT boot\b/;
-const HUECO_SESION_S = 30 * 60;       // mas de 30 min de silencio = otra salida
+/* ★★ 5 HORAS, NO 30 MINUTOS (2026-10-06) ★★
+   Con 30 minutos, cada vez que te sentabas a comer se partia el paseo en dos, y eso tenia un
+   efecto malo de verdad: el aparato guia "hacia atras" por UNA salida, asi que volver a casa te
+   dejaba EN EL SITIO DE LA PARADA en vez de en casa. Con 5 horas, un dia de monte entero cabe en
+   una sola salida.
+   ★ ESTE NUMERO TIENE QUE SER EL MISMO QUE `TRACK_SESION_HUECO_S` EN EL FIRMWARE
+     (`src/tracks_sesiones.h`). Si no coinciden, el aparato y esta pagina ensenarian listas
+     distintas del mismo viaje, y eso si que seria un lio para el operador. */
+const HUECO_SESION_S = 5 * 60 * 60;   // mas de 5 h de silencio = otra salida
 
 function parseLog(fuenteIn){
   const lineas = fuenteIn || logLines || [];
@@ -4278,7 +4299,8 @@ initVolverArriba();   // el boton de "volver arriba" (aparece al desplazarse)
    se lo manda al nodo POR TROZOS. El nodo lo guarda y luego puede guiarte por esa ruta.
 
    ★★ POR QUE SE SIMPLIFICA, Y POR QUE CON RAMER-DOUGLAS-PEEUCKER ★★
-     Un GPX de WikiLoc trae miles de puntos (uno cada pocos metros). En una ranura caben 2040.
+     Un GPX de WikiLoc trae miles de puntos (uno cada pocos metros). En una ranura caben los que
+     diga el nodo (hoy 1698; se le pregunta, no se clava aqui).
      Quedarse con uno de cada N seria lo facil, pero ROMPE LAS CURVAS: en una carretera de
      montana, quedarse con uno de cada cinco corta las eses y la ruta dibujada se va por el
      barranco. RDP quita los puntos que NO anaden informacion (los de una recta) y CONSERVA los
@@ -4296,7 +4318,7 @@ initVolverArriba();   // el boton de "volver arriba" (aparece al desplazarse)
 const Guia = (()=>{
   let puntos = [];          // la ruta ya simplificada, lista para mandar
   let puntosCrudos = 0;     // cuantos traia el GPX (para ensenarlo)
-  let tope = 2040;          // lo actualiza el nodo al preguntarle
+  let tope = 1698;          // ★ SOLO el valor de partida: el nodo lo actualiza al preguntarle
   let enviando = false;
 
   const $g = (id)=> document.getElementById(id);
@@ -4304,6 +4326,18 @@ const Guia = (()=>{
   // ---- 1) LEER EL GPX ----
   // Se sacan los <trkpt> (y, si no hay, los <rtept>: hay GPX que traen la ruta como "ruta" en
   // vez de como "track", y perderla por eso seria una tonteria).
+  //
+  /* ★★ LOS NUMEROS SE REDONDEAN AQUI, ANTES DE MANDARLOS (2026-10-06) ★★
+     ESTABA PUESTO `out.push([la, lo, alt])`, o sea **el numero CRUDO del GPX**, con todos sus
+     decimales. Y eso tiene DOS consecuencias, las dos malas:
+       1) LA LINEA ENGORDA SIN NINGUNA VENTAJA. Un `42.812345678901234` son 18 caracteres; el nodo
+          lo va a redondear igual (lat/lon a 7 decimales, altitud a metros enteros), asi que los
+          decimales de mas **no se guardan: solo ocupan sitio en el cable**.
+          Medido: asi, un trozo de 32 puntos se iba a **1275 bytes** y **NO cabia por Bluetooth**
+          (tope 1024). Redondeado baja a unos 900 y cabe con margen.
+       2) Y EL PRESUPUESTO DE PUNTOS SE DESAPROVECHABA, porque se gasta en decimales que se tiran.
+     ★ 7 DECIMALES es exactamente lo que guarda el nodo (1e7): **ni un decimal util se pierde**, y
+       los que sobran no viajan. La altitud, a metros enteros, que es como la guarda (`int16`). */
   function leeGpx(texto){
     const doc = new DOMParser().parseFromString(texto, "application/xml");
     if (doc.querySelector("parsererror")) return null;
@@ -4315,7 +4349,9 @@ const Guia = (()=>{
       if (!isFinite(la) || !isFinite(lo)) continue;
       const ele = n.getElementsByTagName("ele")[0];
       const alt = ele ? parseFloat(ele.textContent) : 0;
-      out.push([la, lo, isFinite(alt) ? alt : 0]);
+      // ★ Redondeo a lo que el nodo guarda de verdad: 1e7 en lat/lon, metros en la altitud.
+      out.push([Math.round(la * 1e7) / 1e7, Math.round(lo * 1e7) / 1e7,
+                isFinite(alt) ? Math.round(alt) : 0]);
     }
     return out;
   }
@@ -4330,7 +4366,7 @@ const Guia = (()=>{
   //       y conserva los que definen la forma (las curvas). Es el que se usa aqui.
   //
   //   ★ Y NO SE USA UNA TOLERANCIA A OJO: RDP necesita un "hasta aqui vale" (una tolerancia en
-  //     metros), y elegirla mal deja la ruta con 300 puntos cuando caben 2040 (desperdicio) o
+  //     metros), y elegirla mal deja la ruta con 300 puntos cuando caben miles (desperdicio) o
   //     con 3000 (el nodo la rechaza). Aqui se puntua CADA punto por lo que aporta y se cogen
   //     los mejores hasta llenar el presupuesto, que es la forma de aprovecharlo entero.
   //
@@ -4395,7 +4431,22 @@ const Guia = (()=>{
   }
 
   // ---- 3) MANDARLO POR TROZOS ----
-  const POR_TROZO = 64;      // el mismo numero que usa el comprobador del firmware
+  /* ★★ 24 PUNTOS POR TROZO, Y NO ES UN NUMERO A OJO (2026-10-06) ★★
+     ESTABA EN 64, Y 64 NO CABE POR BLUETOOTH. Medido, no supuesto:
+         el tope de una linea es 4096 por USB... pero **1024 por Bluetooth**
+         (ver `usb_lector.h`: `kMaxLinea` y `kMaxLineaBle`; el de Bluetooth es corto A PROPOSITO,
+          para no gastar RAM)
+         con 64 puntos la linea se iba a **1844 bytes**: casi el doble del tope de Bluetooth
+     O sea que subir un GPX **por la app del movil** habria fallado siempre en el primer trozo.
+     ★ Y EL TROZO TIENE QUE CABER EN EL CAMINO MAS ESTRECHO, porque este mismo configurador sirve
+       para los dos.
+     ★ LOS NUMEROS, medidos con las coordenadas MAS GORDAS que se pueden dar:
+           24 puntos ->  864 bytes   (cabe en 1024, con 160 de margen)
+           28 puntos -> 1000 bytes   (cabe, pero con 24 de margen: demasiado justo)
+           32 puntos -> 1134 bytes   NO CABE
+       Con 24 hay margen de sobra y por USB va sobrado. Se pierde algo de velocidad por USB, y se
+       gana que la subida funcione por los dos caminos en vez de fallar en uno sin decir por que. */
+  const POR_TROZO = 24;
 
   async function manda(){
     if (!writer){ alert(t("guide_err_nofix")); return; }
@@ -4416,7 +4467,7 @@ const Guia = (()=>{
                               year: ahora.getFullYear(), month: ahora.getMonth()+1,
                               day: ahora.getDate(), hour: ahora.getHours(), minute: ahora.getMinutes()});
     if (!r1 || r1.ok === false){
-      prog.textContent = (r1 && r1.err) ? r1.err : t("guide_err_noNode");
+      prog.textContent = motivo(r1) || t("guide_err_noNode");
       enviando = false; return;
     }
     let hechos = 0;
@@ -4424,7 +4475,25 @@ const Guia = (()=>{
       const [desde, trozo] = lista[c];
       const r = await pideUno({cmd:"track_chunk", slot, desde, pts: trozo});
       if (!r || r.ok === false){
-        prog.textContent = "FALLO en el trozo " + (c+1) + ": " + ((r && r.err) || "sin respuesta");
+        /* ★★ EL ERROR SE ENSENA ENTERO, CON SUS NUMEROS (2026-10-06) ★★
+           Antes ponia solo lo que mandara el nodo, y el nodo mandaba "indice fuera de la ranura":
+           un texto que **no dice que pasa ni por donde va**. Con eso, saber si el problema era la
+           ranura, el indice o el tamano del trozo obligaba a mirar el firmware a ciegas.
+           ★ AHORA se anaden los datos de ESTE lado (que trozo, cuantos puntos llevaba, cuantos
+             entraron) y los que manda el nodo (`puntosRanura`, `ranuraValida`, `escritos`). Con
+             todo junto, el fallo se ve sin tocar el firmware. */
+        let detalle = "FALLO en el trozo " + (c+1) + "/" + lista.length + ": " +
+                      (motivo(r) || "sin respuesta del nodo");
+        detalle += "  [este trozo: " + trozo.length + " puntos desde " + desde;
+        if (r && typeof r.escritos === "number") detalle += ", entraron " + r.escritos;
+        if (r && typeof r.puntosRanura === "number") {
+          detalle += "; la ranura dice tener " + r.puntosRanura + " puntos";
+        }
+        if (r && typeof r.ranuraValida === "boolean") {
+          detalle += r.ranuraValida ? " y esta preparada" : " y NO esta preparada";
+        }
+        detalle += "]";
+        prog.textContent = detalle;
         enviando = false; return;
       }
       hechos += trozo.length;
@@ -4433,29 +4502,66 @@ const Guia = (()=>{
     }
     const r2 = await pideUno({cmd:"track_end", slot});
     enviando = false;
-    if (!r2 || r2.ok === false){ prog.textContent = (r2 && r2.err) || "FALLO al cerrar"; return; }
+    if (!r2 || r2.ok === false){ prog.textContent = motivo(r2) || "FALLO al cerrar"; return; }
     prog.textContent = t("guide_done") + " " + (slot+1) + " (" + puntos.length + " " + t("guide_points") + ")";
     leeRanuras();
   }
 
   // ---- 4) HABLAR CON EL NODO, UNA PETICION Y SU RESPUESTA ----
-  // El canal ya tiene su lector de lineas; aqui se engancha una promesa que espera la respuesta
-  // con el MISMO `ok`/`err` que usa el protocolo. Con un tope de tiempo: si el nodo no
-  // contesta, es mejor decirlo que dejar la pantalla colgada para siempre.
-  const pendientes = [];
+  /* ★★★ LAS RESPUESTAS SE EMPAREJAN POR NOMBRE, NO POR ORDEN (2026-10-06) ★★★
+     EL FALLO QUE ESTO ARREGLA, y costo una tarde:
+       Aqui se emparejaba **por orden de llegada**: la primera respuesta que llevara `ok` se le
+       daba a la primera peticion pendiente. Pero **mientras sube un track, esto sigue preguntando
+       el estado cada pocos segundos** (ver el `setInterval` del `status`). Las respuestas se
+       cruzan, todo se desplaza una posicion, y la subida se queda con la contestacion del
+       `status` en vez de con la de su trozo.
+       Sintoma exacto que reporto el operador: **«FALLO en el trozo 1: indice fuera de la
+       ranura»** — un error del nodo que NO era la respuesta a su trozo, y siempre en el primero.
+     ★ AHORA el nodo pone `"cmd"` en cada respuesta (ver `protocol.cpp`, `sendJsonDoc`), y aqui se
+       busca la peticion QUE PIDE ESE COMANDO. El orden de llegada deja de importar.
+     ★ Y SI LA RESPUESTA NO TRAE `cmd` (un nodo con firmware viejo), se cae al comportamiento de
+       antes (por orden) en vez de quedarse colgado: asi esta pagina sigue valiendo con los dos. */
+  const pendientes = [];       // {cmd, res, vence}
+  /* ★★ EL MOTIVO DEL ERROR PUEDE VENIR EN `err` O EN `error` (2026-10-06) ★★
+     El nodo usa LAS DOS claves, y no es un descuido de una linea: `replyError` (los errores
+     generales) manda **`error`**, y los caminos de los tracks mandan **`err`**. Esta pagina solo
+     leia `err`, asi que **cuando el nodo decia el motivo, se perdia** y salia el texto generico
+     («sin respuesta del nodo»), que no dice nada.
+     ★ En vez de arreglar solo un sitio (y que el siguiente se olvide), hay UNA funcion que saca el
+       motivo de donde este. Lo correcto seria unificar el firmware, y queda apuntado. */
+  function motivo(r){
+    if (!r) return "";
+    if (typeof r.err === "string" && r.err) return r.err;
+    if (typeof r.error === "string" && r.error) return r.error;
+    return "";
+  }
   function pideUno(obj){
     return new Promise((res)=>{
-      pendientes.push(res);
+      const p = {cmd: obj.cmd || "", res, vence: 0};
+      p.vence = setTimeout(()=>{
+        const i = pendientes.indexOf(p);
+        if (i >= 0) pendientes.splice(i, 1);
+        res(null);
+      }, 4000);
+      pendientes.push(p);
       cmdJson(obj);
-      setTimeout(()=>{ const i = pendientes.indexOf(res); if (i >= 0){ pendientes.splice(i,1); res(null); } }, 4000);
     });
   }
   // Engancha la respuesta: la llama el lector de lineas del canal (ver handleLine).
   function respuesta(obj){
     if (!pendientes.length) return false;
     if (!("ok" in obj)) return false;          // no es una respuesta a un comando nuestro
-    const res = pendientes.shift();
-    res(obj);
+    // 1) Se busca la peticion de ESE comando (lo normal, con el firmware de hoy).
+    let i = -1;
+    if (typeof obj.cmd === "string" && obj.cmd){
+      i = pendientes.findIndex((p)=> p.cmd === obj.cmd);
+    }
+    // 2) Si la respuesta no dice su comando (nodo viejo), o no hay ninguna peticion de ese
+    //    comando, se coge la mas antigua: es lo que se hacia antes.
+    if (i < 0) i = 0;
+    const p = pendientes.splice(i, 1)[0];
+    clearTimeout(p.vence);
+    p.res(obj);
     return true;
   }
 
@@ -4465,7 +4571,7 @@ const Guia = (()=>{
     const r = await pideUno({cmd:"track_list"});
     const tabla = $g("guiaTabla");
     if (!r || r.ok === false){
-      tabla.innerHTML = "<tr><td>" + ((r && r.err) || t("guide_err_nofix")) + "</td><td></td></tr>";
+      tabla.innerHTML = "<tr><td>" + (motivo(r) || t("guide_err_nofix")) + "</td><td></td></tr>";
       return;
     }
     if (typeof r.topePorRanura === "number"){

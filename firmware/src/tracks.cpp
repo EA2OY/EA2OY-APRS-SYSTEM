@@ -58,27 +58,84 @@ namespace {
 // ------------------------------------------------------------------ acceso a la flash
 // El NVMC. `READY` vale 1 cuando esta LISTO (el nombre del campo en el header de Nordic
 // enganna: `NVMC_READY_READY_Busy = 0`). Esta espera es la que no puede pasar en el arranque.
-inline void nvmcEspera() {
+//
+// ★★★ ESTE BUCLE NO TENIA LIMITE, Y ESO CUELGA EL APARATO (2026-10-07) ★★★
+//   Estaba puesto `while (!NRF_NVMC->READY) {}` a secas. Si el NVMC no levanta `READY` —por lo que
+//   sea: una operacion que no termina, un acceso prohibido, el planificador de la SoftDevice— ese
+//   bucle **no sale NUNCA**: el aparato se queda mudo, sin reiniciarse y sin decir nada.
+//   ★ SE DESCUBRIO CON EL NODO ENCHUFADO AL ORDENADOR, hablandole por el puerto serie:
+//       - `status`, `track_list`, `beacon`, `track_end` e incluso un comando inventado: contestan
+//         **al instante**.
+//       - `track_begin`: **ni una respuesta en 40 segundos**, y el nodo sigue vivo despues (contesta
+//         a lo siguiente). O sea: **se queda dentro y no vuelve**.
+//     Y `track_begin` es el unico comando que BORRA PAGINAS (`tracksRanuraEmpieza` borra las 5 de
+//     la ranura). Todo apunta a que se queda esperando aqui.
+//   ★ AHORA LA ESPERA TIENE TOPE. Si vence, se sale, se cuenta el fallo, y **el comando puede
+//     contestar un error** en vez de dejar al operador mirando una pantalla que no responde.
+//     Un fallo que se cuenta es un fallo que se puede arreglar; uno que cuelga, no.
+volatile uint32_t gNvmcEsperas = 0;      // cuantas veces se ha esperado al NVMC
+volatile uint32_t gNvmcVencidas = 0;     // cuantas veces se ha agotado el tope (0 = todo bien)
+
+/**
+ * Que fallo la ultima vez al preparar una ranura: 0 = nada, 1 = el borrado, 2 = la escritura.
+ * Se apunta para poder decirlo por el puerto, en vez de contestar solo "no se pudo".
+ */
+uint8_t gUltimoFalloRanura = 0;
+// ★★ OJO CON EL ESPACIO DE NOMBRES ANONIMO (2026-10-07) ★★
+//   Estas tres funciones de consulta (mas abajo, al final del fichero) tienen que estar FUERA del
+//   `namespace {` que empieza aqui: dentro, tienen enlace INTERNO y el enlazador no las encuentra
+//   desde `protocol.cpp`. El sintoma es un error de enlace («undefined reference»), que es facil de
+//   confundir con no haberlas escrito. Las variables si pueden quedarse dentro: las lee el mismo
+//   fichero.
+
+/**
+ * Espera a que el NVMC este listo, CON TOPE.
+ *
+ * @return true si quedo listo, false si se agoto el tope.
+ * ★ EL TOPE ES GENEROSO A PROPOSITO: un borrado de pagina tarda ~28 ms en este chip, asi que 200 ms
+ *   es margen de sobra y sigue siendo un parpadeo para quien lo sufre. Lo que NO vale es esperar
+ *   para siempre.
+ */
+inline bool nvmcEspera() {
+  gNvmcEsperas++;
+  const uint32_t t0 = millis();
   while (!NRF_NVMC->READY) {
+    if ((uint32_t)(millis() - t0) > 200u) {
+      gNvmcVencidas++;
+      // Se deja el NVMC en modo lectura antes de salir: si se quedara en modo escritura, la
+      // siguiente lectura de flash podria dar un fallo de bus, y eso si que tumba el aparato.
+      NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+      return false;
+    }
   }
+  return true;
 }
 
-void flashBorraPagina(uint32_t dir) {
+/**
+ * Borra una pagina. @return false si el NVMC no respondio (ver `nvmcEspera`).
+ * ★ DEVUELVE SI HA IDO BIEN: antes no devolvia nada, asi que quien la llamaba **no podia saber** si
+ *   el borrado habia ocurrido. Y un borrado que no ocurre deja la escritura siguiente mezclada
+ *   (la NVMC solo pasa bits de 1 a 0), o sea una cabecera corrupta y un fallo que aparece lejos.
+ */
+bool flashBorraPagina(uint32_t dir) {
   NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos;
-  nvmcEspera();
+  if (!nvmcEspera()) return false;
   NRF_NVMC->ERASEPAGE = dir;
-  nvmcEspera();
+  const bool ok = nvmcEspera();
   NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
   nvmcEspera();
+  return ok;
 }
 
-void flashEscribePalabra(uint32_t dir, uint32_t valor) {
+/** Escribe una palabra. @return false si el NVMC no respondio (ver `nvmcEspera`). */
+bool flashEscribePalabra(uint32_t dir, uint32_t valor) {
   NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos;
-  nvmcEspera();
+  if (!nvmcEspera()) return false;
   *(volatile uint32_t *)dir = valor;
-  nvmcEspera();
+  const bool ok = nvmcEspera();
   NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
   nvmcEspera();
+  return ok;
 }
 
 // ------------------------------------------------------------------ lectura
@@ -215,6 +272,24 @@ bool vivoCabLee(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hour, uin
 // Al arrancar: buscar la pagina escrita MAS RECIENTE y seguir desde ahi, sin borrar nada.
 // El criterio es la secuencia: la mas alta es la ultima que se empezo a escribir. Si hay
 // varias con la misma (no deberia), gana la que tenga mas puntos.
+//
+// ★★ ESTO SE LLAMA `vivoRescata` Y HACE LO QUE DICE: rescatar el track que ya habia (2026-10-06) ★★
+//   Hoy (2026-10-06, DESPUES de darle una vuelta) se ha vuelto a dejar COMO ESTABA, y conviene
+//   apuntar por que, porque me lie yo solo:
+//
+//   Se intento cambiar para que cada encendido empezara un track NUEVO, apoyandose en que es lo
+//   que hacen los GPS de monte (Garmin: «new track segments on Power-off / Power-on cycle»).
+//   ★ PERO ERA INNECESARIO, y el operador lo dijo tres veces: **las sesiones YA se graban.** El
+//     aparato parte el registro por sesiones desde septiembre, y quien lo hace es el REGISTRO DE
+//     VIAJE, no este anillo:
+//       - en `index.html` (configurador): `let sesiones=[]; // tracks en que se parte el registro
+//         (una por encendido)`, y las corta por `EVT boot` (`BOOT_RE`) y, como respaldo, por un
+//         hueco de mas de 30 minutos sin lineas (`HUECO_SESION_S`).
+//       - y las ensena en un desplegable, con su GPX y su KML.
+//     O sea que el historial de sesiones **ya existia**; lo que faltaba era que EL APARATO lo
+//     supiera leer y ensenar, no cambiar como se graba.
+//   ★ LA LECCION: **antes de tocar como se GRABA, mira quien lo LEE.** Yo mire el anillo y no mire
+//     el registro de viaje, que es donde estaba la respuesta desde el primer dia.
 void vivoRescata() {
   int mejor = -1;
   for (uint16_t i = 0; i < TRACK_VIVO_PAGINAS; i++) {
@@ -600,8 +675,15 @@ bool tracksRanuraEmpieza(uint8_t slot, uint16_t puntos, const TrackRanuraInfo *m
   //        anterior... y no se pueden escribir.
   //   Cuesta ~140 ms de flash (5 x 28 ms) UNA vez por subida, no por punto: no se nota, y a
   //   cambio la ranura empieza siempre LIMPIA, que es lo unico que hace fiable lo de despues.
+  // ★★ Y SI EL BORRADO NO VA BIEN, SE DICE Y SE SALE (2026-10-07) ★★
+  //   Antes se borraba y se seguia, pasara lo que pasara. Si el NVMC se queda colgado, la version
+  //   anterior **no volvia nunca** de `track_begin` (sin respuesta, con el aparato vivo pero mudo).
+  //   Ahora, si una pagina no se deja borrar, se para AQUI y el comando puede contestar un error.
   for (uint32_t k = 0; k < TRACK_SLOT_PAGINAS; k++) {
-    flashBorraPagina(slotBase(slot) + k * TRACK_PAGINA);
+    if (!flashBorraPagina(slotBase(slot) + k * TRACK_PAGINA)) {
+      gUltimoFalloRanura = 1;      // 1 = fallo el BORRADO
+      return false;
+    }
   }
   SlotCab cab;
   memset(&cab, 0xFF, sizeof(cab));
@@ -619,7 +701,13 @@ bool tracksRanuraEmpieza(uint8_t slot, uint16_t puntos, const TrackRanuraInfo *m
                                      //   se guardaba como si fuera latitud
   const uint32_t *w = (const uint32_t *)&cab;
   for (size_t i = 0; i < sizeof(cab) / 4; i++) {
-    flashEscribePalabra(slotBase(slot) + i * 4, w[i]);
+    // ★ SI LA ESCRITURA NO VA BIEN, SE SABE Y SE DICE (2026-10-07): antes se escribia y se seguia,
+    //   asi que una cabecera a medias se devolvia como "preparada" y el fallo aparecia luego, en el
+    //   primer trozo, donde ya no se sabe por que.
+    if (!flashEscribePalabra(slotBase(slot) + i * 4, w[i])) {
+      gUltimoFalloRanura = 2;      // 2 = fallo la ESCRITURA de la cabecera
+      return false;
+    }
   }
   // ★★ LA CABECERA DE LA PAGINA 0 SE ESCRIBE A MANO, SIN BORRAR (2026-09-22) ★★
   //   Aqui estaba `pagInicia(slotBase(slot) + SLOT_PAG0_HDR, 1)`, y esa funcion EMPIEZA
@@ -630,8 +718,13 @@ bool tracksRanuraEmpieza(uint8_t slot, uint16_t puntos, const TrackRanuraInfo *m
   //   filas "Vacia" sin que nada dijera por que.
   //   Lo cazo una revision independiente. La pagina YA esta borrada (linea de arriba), asi que
   //   escribir la cabecera es solo escribir: borrar otra vez no aporta nada y destruye lo hecho.
-  flashEscribePalabra(slotBase(slot) + SLOT_PAG0_HDR + 0, TRACK_MAGIC);
-  flashEscribePalabra(slotBase(slot) + SLOT_PAG0_HDR + 4, pagPalabra(1, 0xFFFFu));
+  const bool ok1 = flashEscribePalabra(slotBase(slot) + SLOT_PAG0_HDR + 0, TRACK_MAGIC);
+  const bool ok2 = flashEscribePalabra(slotBase(slot) + SLOT_PAG0_HDR + 4, pagPalabra(1, 0xFFFFu));
+  if (!ok1 || !ok2) {
+    gUltimoFalloRanura = 3;      // 3 = fallo la cabecera de PAGINA (el magico de la pagina)
+    return false;
+  }
+  gUltimoFalloRanura = 0;
   return true;
 }
 
@@ -693,16 +786,85 @@ TrackFuente gFuente = TRK_FUENTE_NADA;
 int        gSlot = -1;
 bool       gAlReves = false;
 uint32_t   gPuntos = 0;
+
+/**
+ * ★ DESDE QUE PUNTO DEL TRACK VIVO SE GUIA (2026-10-06). Casi siempre 0.
+ *
+ * Lo pone `tracksGuiaEmpiezaTrozo`, que es lo que usa "volver a casa" cuando el operador elige UNA
+ * salida de la lista. El track vivo es una sola tirada con las salidas de varios dias pegadas, y
+ * sin esto te guiaria por la ruta entera (los paseos de anteayer incluidos).
+ */
+uint32_t   gDesde = 0;
 TrackGuia  gGuia{};
 uint32_t   gUltCalculoMs = 0;
 
+// ===========================================================================
+//  ★★ EL ANCLA: POR DONDE IBA, PARA NO SALTAR DE TRAMO (2026-10-06) ★★
+//
+//  EL FALLO QUE ARREGLA, contado por el operador y luego confirmado en el codigo:
+//    El motor buscaba el tramo GEOMETRICAMENTE MAS CERCANO entre TODOS los de la ruta, sin
+//    acordarse de por donde ibas. En una ruta que **se cruza consigo misma** —una horquilla de
+//    montana, una ida y vuelta por el mismo camino, un mirador al que te acercas dos veces— tu
+//    posicion puede estar casi a la misma distancia del tramo 10 y del tramo 90. El motor elegia
+//    uno de los dos **al azar de la geometria**, y el resultado era una barbaridad: darte por
+//    avanzado medio track, o mandarte hacia atras.
+//
+//  ★ Y OJO, QUE ESTO NO ES LO MISMO QUE "HABERSE SALTADO UN PUNTO": el motor NO exige pasar por
+//    los puntos (proyecta sobre la LINEA), y eso esta bien y no se toca. Lo que faltaba era
+//    **memoria de por donde ibas**.
+//
+//  COMO FUNCIONA: se guarda POR DONDE IBAS (en metros de recorrido desde el principio de la ruta,
+//  ver `gRecorridoAncla`), y la busqueda se limita a los tramos que caen a menos de
+//  `kGuiaAnclaMetros` de ahi. Dentro de esa ventana SI se elige el mas cercano (que es lo correcto:
+//  asi no hace falta pasar exactamente por los puntos), pero **no se puede pegar un salto al otro
+//  lado de la ruta**.
+//
+//  ★ LA VENTANA ES DE LAS DOS DIRECCIONES A PROPOSITO: si te das la vuelta y vuelves por donde
+//    viniste, tienes que poder retroceder. Lo que no se puede es TELEPORTARTE.
+// ===========================================================================
+bool     gAnclaValida = false; // false = todavia no hay ancla (primer calculo tras empezar a guiar)
+
+/**
+ * DONDE ESTABAS, medido en METROS DE RECORRIDO desde el principio de la ruta.
+ *
+ * ★ Esta es la unidad buena (ver `kGuiaAnclaMetros`): el numero de tramo no vale, porque un tramo
+ *   mide 10 m en el track en vivo y puede medir 1 km en una ruta simplificada.
+ */
+double gRecorridoAncla = 0.0;
+
+/** Donde caes TU, en metros de recorrido. Se recalcula en cada busqueda y se usa para el ancla. */
+double gRecorridoMejor = 0.0;
 constexpr double kMetrosPorGradoLat = 110540.0;
 constexpr double kMetrosPorGradoLon = 111320.0;
+
+/**
+ * Cuantos METROS de recorrido a cada lado del ancla se miran al buscar por donde vas.
+ *
+ * ★★ AQUI ESTA LA LECCION DEL DIA (2026-10-06) ★★
+ *   El primer intento midio la ventana en NUMERO DE TRAMOS (24 tramos), y estaba MAL por un motivo
+ *   que solo se ve montando el caso: **un tramo no mide lo mismo en un track que en otro**. Con
+ *   puntos cada 10 m (el track en vivo), 24 tramos son 240 m; pero en una ruta con puntos cada
+ *   1 km, 24 tramos son 24 km... y entonces la ventana **no protege de nada**: deja entrar el otro
+ *   lado de la ruta. La prueba del motor lo cazo (con 3 tramos, el tramo «de la vuelta» estaba a
+ *   distancia 2 y entraba en la ventana).
+ *   **La ventana tiene que estar en METROS, que es lo que se quiere decir cuando se dice "cerca".**
+ *
+ * ★ POR QUE 250 m: es del orden de la anchura de un camino con su margen, y bastante menos que la
+ *   separacion tipica entre dos trozos distintos de una misma ruta. Ni tan corto que una curva
+ *   cerrada se salga, ni tan largo que deje entrar el otro lado.
+ *
+ * ★ Y NO HACE FALTA RECORRER LA RUTA DOS VECES: la distancia se va acumulando mientras se busca,
+ *   asi que el mismo bucle sirve para medir y para elegir.
+ */
+constexpr double kGuiaAnclaMetros = 250.0;
 
 // Lee un punto del track ACTIVO (sin aplicar el sentido).
 bool leeCrudo(uint32_t idx, TrackPunto *out) {
   if (idx >= gPuntos) return false;
-  return (gFuente == TRK_FUENTE_VIVO) ? tracksVivoLee(idx, out)
+  // ★ AQUI ESTA EL TROZO (2026-10-06): `gDesde` desplaza la lectura dentro del track vivo, para
+  //   poder guiar por UNA salida y no por la tirada entera. Con `gDesde = 0` (lo normal) esto es
+  //   exactamente lo de antes.
+  return (gFuente == TRK_FUENTE_VIVO) ? tracksVivoLee(idx + gDesde, out)
                                       : tracksRanuraLee((uint8_t)gSlot, idx, out);
 }
 
@@ -734,7 +896,32 @@ bool tracksGuiaEmpieza(TrackFuente fuente, int slot, bool alReves) {
   gSlot    = slot;
   gAlReves = alReves;
   gPuntos  = n;
+  gDesde   = 0;               // el track entero: del primer punto al ultimo
   gUltCalculoMs = 0;          // fuerza un calculo en el primer tick
+  // ★ EL ANCLA SE OLVIDA AL EMPEZAR (2026-10-06): si no, se arrastraria el tramo de la ruta
+  //   ANTERIOR y el primer calculo de esta se haria con la ventana puesta en un sitio que no
+  //   tiene nada que ver con ella. Al invalidarla, el primer tick vuelve a mirar toda la ruta,
+  //   que es lo correcto para engancharse.
+  gAnclaValida = false;
+  gGuia = TrackGuia{};
+  gGuia.activo = true;
+  return true;
+}
+
+bool tracksGuiaEmpiezaTrozo(uint32_t desde, uint32_t hasta, bool alReves) {
+  const uint32_t total = tracksVivoPuntos();
+  if (hasta > total) hasta = total;
+  if (desde >= hasta) return false;
+  const uint32_t n = hasta - desde;
+  if (n < 2) return false;    // con un punto no hay camino que seguir
+
+  gFuente  = TRK_FUENTE_VIVO;
+  gSlot    = -1;
+  gAlReves = alReves;
+  gPuntos  = n;
+  gDesde   = desde;           // ★ y aqui esta todo: se guia SOLO por este trozo
+  gUltCalculoMs = 0;
+  gAnclaValida = false;
   gGuia = TrackGuia{};
   gGuia.activo = true;
   return true;
@@ -744,6 +931,8 @@ void tracksGuiaTermina() {
   gFuente = TRK_FUENTE_NADA;
   gSlot = -1;
   gPuntos = 0;
+  gDesde = 0;                 // y el trozo se olvida: el proximo guiado empieza limpio
+  gAnclaValida = false;       // el ancla no sobrevive a un guiado (ver arriba)
   gGuia = TrackGuia{};
 }
 
@@ -794,26 +983,85 @@ void tracksGuiaTick(double lat, double lon) {
   double ax, ay, bx, by;
   aMetros(a, lat0, lon0, cosLat0, &ax, &ay);
 
+  // ★★ LA VENTANA DEL ANCLA, EN METROS DE RECORRIDO (2026-10-06) ★★
+  //   `recorrido` es lo que llevas andado DE RUTA desde el principio, y `recAncla` donde estabas
+  //   cuando te vio la ultima vez. Solo se mira el tramo si su recorrido cae dentro de la ventana.
+  //   Ver la explicacion larga donde se declara `kGuiaAnclaMetros`.
+  double recorrido = 0.0;
+
   for (uint32_t i = 0; i + 1 < gPuntos; i++) {
     if (!tracksGuiaLee(i + 1, &b)) break;
     aMetros(b, lat0, lon0, cosLat0, &bx, &by);
 
     const double vx = bx - ax, vy = by - ay;
     const double len2 = vx * vx + vy * vy;
+    const double len = sqrt(len2);
+
+    const double recTramo = recorrido + len * 0.5;   // el centro del tramo, en recorrido
+    const bool enVentana = !gAnclaValida ||
+        (recTramo >= gRecorridoAncla - kGuiaAnclaMetros &&
+         recTramo <= gRecorridoAncla + kGuiaAnclaMetros);
+
     double t = 0.0;
-    if (len2 > 1e-9) {
-      t = (-ax * vx - ay * vy) / len2;   // tu posicion es (0,0): el vector A->P es -A
-      if (t < 0.0) t = 0.0;
-      if (t > 1.0) t = 1.0;
+    double d = 1e12;
+    if (enVentana) {
+      if (len2 > 1e-9) {
+        t = (-ax * vx - ay * vy) / len2;   // tu posicion es (0,0): el vector A->P es -A
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
+      }
+      const double px = ax + t * vx, py = ay + t * vy;
+      d = sqrt(px * px + py * py);
     }
-    const double px = ax + t * vx, py = ay + t * vy;
-    const double d = sqrt(px * px + py * py);
     if (d < mejorDist) {
       mejorDist = d; mejorSeg = i; mejorT = t;
-      mejorSegLen = sqrt(len2);       // en metros, porque ax..by ya estan en metros
+      mejorSegLen = len;              // en metros, porque ax..by ya estan en metros
+      gRecorridoMejor = recorrido + len * t;   // donde caes tu, en recorrido
     }
     ax = bx; ay = by;
+    recorrido += len;
   }
+
+  // ★ Y EL ANCLA SE MUEVE A DONDE TE HA VISTO. A partir de aqui, la proxima busqueda se hace
+  //   alrededor de ese punto, no de toda la ruta.
+  //
+  //   ★ RED DE SEGURIDAD: si no se ha encontrado NADA dentro de la ventana, se repite con la ruta
+  //     entera. Sin esto, `mejorDist` seguiria valiendo 1e12 y `mejorSeg` se quedaria en 0: el
+  //     motor diria que estas en el PRINCIPIO de la ruta, que es una mentira gorda.
+  if (mejorDist > 1e11) {
+    mejorDist = 1e12; mejorSeg = 0; mejorT = 0.0; mejorSegLen = 0.0;
+    // `a` ya esta leido arriba y no se ha tocado: solo hay que rehacer sus metros.
+    aMetros(a, lat0, lon0, cosLat0, &ax, &ay);
+    double rec = 0.0;
+    for (uint32_t i = 0; i + 1 < gPuntos; i++) {
+      if (!tracksGuiaLee(i + 1, &b)) break;
+      aMetros(b, lat0, lon0, cosLat0, &bx, &by);
+      const double vx = bx - ax, vy = by - ay;
+      const double len2 = vx * vx + vy * vy;
+      const double len = sqrt(len2);
+      double t = 0.0;
+      if (len2 > 1e-9) {
+        t = (-ax * vx - ay * vy) / len2;
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
+      }
+      const double px = ax + t * vx, py = ay + t * vy;
+      const double d = sqrt(px * px + py * py);
+      if (d < mejorDist) {
+        mejorDist = d; mejorSeg = i; mejorT = t;
+        mejorSegLen = len;
+        gRecorridoMejor = rec + len * t;
+      }
+      ax = bx; ay = by;
+      rec += len;
+    }
+  }
+
+  // ★ EL ANCLA SE MUEVE A DONDE CAES TU, en metros de recorrido (no en numero de tramo: ver
+  //   `kGuiaAnclaMetros`). Si el mejor tramo no se ha podido calcular (ruta de un solo punto), se
+  //   deja el ancla donde estaba, que es lo menos malo.
+  if (mejorDist <= 1e11) gRecorridoAncla = gRecorridoMejor;
+  gAnclaValida = true;
 
   // ---- lo que FALTA: lo que resta del tramo actual mas los tramos que quedan por delante ----
   // Se recorre SOLO desde el tramo ganador, no desde el principio.
@@ -889,6 +1137,30 @@ void tracksGuiaTick(double lat, double lon) {
   // grados de brujula de verdad, que es lo que se compara con el rumbo del GPS.
   gGuia.rumboRutaDeg = gpsBearingDeg(lat, lon,
                                      (double)mira.lat1e7 / 1e7, (double)mira.lon1e7 / 1e7);
+}
+
+// ===========================================================================
+//  CONSULTAS DE DIAGNOSTICO (2026-10-07)
+//
+//  ★ VAN AQUI, FUERA DEL `namespace {` DE ARRIBA, Y ESO ES LO IMPORTANTE: dentro tendrian enlace
+//    interno y `protocol.cpp` no las encontraria (error de enlace, «undefined reference»). Es un
+//    fallo facil de cometer y de confundir con no haber escrito la funcion.
+// ===========================================================================
+
+/** Cuantas veces la espera al NVMC se ha pasado del tope. Si no es 0, hay que mirarlo. */
+uint32_t tracksNvmcVencidas() { return gNvmcVencidas; }
+
+/** Cuantas veces se ha esperado al NVMC en total (para tener una referencia de cuanto se escribe). */
+uint32_t tracksNvmcEsperas() { return gNvmcEsperas; }
+
+/** En que paso fallo la ultima preparacion de ranura, en palabras (para el mensaje de error). */
+const char *tracksRanuraFalloPalabra() {
+  switch (gUltimoFalloRanura) {
+    case 1:  return "borrando las paginas";
+    case 2:  return "escribiendo la cabecera de la ranura";
+    case 3:  return "escribiendo la cabecera de la pagina";
+    default: return "en un sitio que no se apunto";
+  }
 }
 
 #endif  // FAKETEC_BOARD_TECHO

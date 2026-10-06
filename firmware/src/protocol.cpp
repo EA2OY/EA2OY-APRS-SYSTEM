@@ -317,7 +317,33 @@ void ConfigProtocol::hookLinea(void *ctx, const char *linea, size_t n, Origen or
 //   las dos unicas puertas de salida del protocolo: el cable y el Bluetooth.
 void ConfigProtocol::sendLine(const String &s) { protocolHostOut(s.c_str()); }
 
+// ===========================================================================
+//  ★★★ CADA RESPUESTA DICE A QUE COMANDO CONTESTA (2026-10-06) ★★★
+//
+//  EL FALLO QUE ESTO ARREGLA, y costo una tarde entera:
+//    Las respuestas del nodo **no llevaban etiqueta**: eran un `{"ok":...}` y ya. Y el
+//    configurador, para saber cual era de cual, las emparejaba **POR ORDEN DE LLEGADA**.
+//    Pero el configurador **sigue preguntando el estado cada pocos segundos** mientras sube un
+//    track (`setInterval`, linea ~2930 de index.html). O sea que las respuestas se cruzan:
+//    la subida se queda con la contestacion del `status`, y a partir de ahi **todo va desfasado
+//    una posicion**.
+//    Sintoma exacto que reporto el operador: **«FALLO en el trozo 1: indice fuera de la ranura»**
+//    — un error del nodo que **no era la respuesta a su trozo**, y encima siempre en el primero.
+//
+//  ★ LA SOLUCION: la respuesta lleva el nombre del comando que la provoco (`"cmd"`), y el
+//    configurador empareja POR ESE NOMBRE. Asi el orden de llegada deja de importar.
+//  ★ `gCmdActual` se pone en `handleLine` y vale "" cuando la respuesta NO viene de un comando
+//    (avisos internos): en ese caso **no se etiqueta nada**, porque una etiqueta vieja seria peor
+//    que ninguna.
+// ===========================================================================
+static const char *gCmdActual = "";
+
 static void sendJsonDoc(JsonDocument &doc) {
+  // La etiqueta se pone AQUI, en la unica puerta de salida del JSON: asi no hay forma de que una
+  // respuesta se quede sin ella por olvido.
+  if (gCmdActual != nullptr && gCmdActual[0] != '\0' && !doc["cmd"].is<const char *>()) {
+    doc["cmd"] = gCmdActual;
+  }
   String out;
   serializeJson(doc, out);
   protocolHostOut(out.c_str());
@@ -505,9 +531,55 @@ void ConfigProtocol::handleTrackInicio(const JsonDocument &doc) {
   meta.hour   = (uint8_t)(doc["hour"] | 0);
   meta.minute = (uint8_t)(doc["minute"] | 0);
   if (!tracksRanuraEmpieza((uint8_t)slot, (uint16_t)puntos, &meta)) {
-    replyError("no se pudo preparar la ranura");
+    // ★ SE DICE EN QUE PASO FALLO (2026-10-07): borrado, escritura de la cabecera de ranura, o
+    //   escritura del magico de la pagina. Un "no se pudo preparar" a secas obliga a adivinar cual
+    //   de los tres es, y con un aparato al que no se le puede conectar un depurador eso es perder
+    //   tardes enteras.
+    char err[128];
+    snprintf(err, sizeof err,
+             "no se pudo preparar la ranura %d: fallo %s (nvncVencidas=%lu)", slot,
+             tracksRanuraFalloPalabra(),
+             (unsigned long)tracksNvmcVencidas());
+    replyError(err);
     return;
   }
+
+  // ★★★ EL NODO SE COMPRUEBA A SI MISMO DESPUES DE PREPARAR LA RANURA (2026-10-06) ★★★
+  //   POR QUE: el operador recibio esto al subir un GPX:
+  //       «FALLO en el trozo 1/21: punto 0 no cabe: la ranura 0 tiene 0 puntos (NO preparada)»
+  //   O sea: **`track_begin` dijo que si, y la ranura se quedo SIN preparar**. Con el codigo de
+  //   antes eso era invisible: el nodo contestaba `ok` fiandose de que la escritura habia ido bien,
+  //   y el fallo no aparecia hasta el primer trozo, donde ya no se sabe por que.
+  //   ★ AHORA se VUELVE A LEER la cabecera recien escrita y se dice lo que hay DE VERDAD. Si la
+  //     ranura no quedo bien, el error sale AQUI, que es donde esta el problema, y con el numero
+  //     que se intento escribir. Asi el fallo se cuenta solo, en vez de dejarnos adivinar.
+  {
+    TrackRanuraInfo leido;
+    tracksRanuraInfo((uint8_t)slot, &leido);
+    if (!leido.valida || leido.puntos != (uint16_t)puntos) {
+      // ★ Y SE LEEN LOS BYTES CRUDOS DE LA CABECERA, que es lo que distingue las dos causas
+      //   posibles y que desde fuera NO se pueden separar:
+      //     - magico != 0x31534C54 ('TLS1')  -> la escritura no llego, o la pagina no estaba
+      //       borrada (la NVMC solo pasa bits de 1 a 0: escribir sobre algo ya escrito los mezcla)
+      //     - magico correcto pero puntos = 0 -> el borrado si fue bien y fallo la escritura del
+      //       numero de puntos
+      //   Con estos dos numeros, el fallo se cuenta solo en vez de dejarnos adivinar.
+      const uint32_t crudo0 = *(volatile uint32_t *)(TRACK_SLOT_BASE +
+                                                     (uint32_t)slot * TRACK_SLOT_TAM);
+      const uint32_t crudo1 = *(volatile uint32_t *)(TRACK_SLOT_BASE +
+                                                     (uint32_t)slot * TRACK_SLOT_TAM + 4);
+      char err[128];
+      snprintf(err, sizeof err,
+               "la ranura %d no se pudo preparar: se pidieron %d puntos, quedo con %u (%s); "
+               "cabecera cruda: %08lX %08lX",
+               slot, puntos, (unsigned)leido.puntos,
+               leido.valida ? "preparada" : "NO preparada",
+               (unsigned long)crudo0, (unsigned long)crudo1);
+      replyError(err);
+      return;
+    }
+  }
+
   JsonDocument out;
   out["ok"] = true;
   out["slot"] = slot;
@@ -539,11 +611,44 @@ void ConfigProtocol::handleTrackTrozo(const JsonDocument &doc) {
     if (!tracksRanuraEscribe((uint8_t)slot, i, &tp)) {
       // Si el indice se sale, se corta aqui y se dice CUANTOS entraron: el configurador sabe
       // exactamente por donde iba y puede corregir sin empezar de cero.
+      //
+      // ★★★ Y AHORA EL ERROR DICE LOS NUMEROS (2026-10-06) ★★★
+      //   Antes ponia solo "indice fuera de la ranura", y eso **no permite averiguar nada**:
+      //   el operador mando un GPX y recibio ese texto, y desde fuera es imposible saber si el
+      //   problema era que la ranura no se preparo, que se pidio un indice mas alla del final, o
+      //   que la ranura se habia quedado a medias.
+      //   ★ Se descubrio asi: con el error escueto hubo que mirar el firmware a ciegas durante un
+      //     buen rato. Con los numeros, el mismo texto dice CUAL de los tres casos es.
+      TrackRanuraInfo queHay;
+      tracksRanuraInfo((uint8_t)slot, &queHay);
+      // ★★ Y LOS BYTES CRUDOS DE LA CABECERA, QUE ES LO QUE FALTABA (2026-10-06) ★★
+      //   Caso real del operador: `track_begin` **comprueba la cabecera recien escrita y la ve
+      //   bien**... y milisegundos despues, al llegar el primer trozo, la ranura esta SIN
+      //   preparar. O sea que **algo la estropea en medio**, y desde el ordenador no hay forma de
+      //   saber que ni cuando.
+      //   Con estos dos numeros se distinguen las dos causas posibles:
+      //     - `FFFFFFFF FFFFFFFF` -> la pagina esta BORRADA: alguien la ha borrado despues de
+      //       prepararla (o el borrado de la preparacion llego tarde).
+      //     - cualquier otra cosa  -> la cabecera esta escrita pero con OTROS valores: alguien la
+      //       ha pisado.
+      const uint32_t dirCab = TRACK_SLOT_BASE + (uint32_t)slot * TRACK_SLOT_TAM;
+      const uint32_t crudo0 = *(volatile uint32_t *)dirCab;
+      const uint32_t crudo1 = *(volatile uint32_t *)(dirCab + 4);
+      char err[160];
+      snprintf(err, sizeof err,
+               "punto %lu no cabe: la ranura %d tiene %u puntos (%s); cabecera cruda: "
+               "%08lX %08lX",
+               (unsigned long)i, slot, (unsigned)queHay.puntos,
+               queHay.valida ? "preparada" : "NO preparada",
+               (unsigned long)crudo0, (unsigned long)crudo1);
       JsonDocument out;
       out["ok"] = false;
-      out["err"] = "indice fuera de la ranura";
+      out["err"] = err;
       out["escritos"] = escritos;
       out["desde"] = desde;
+      out["slot"] = slot;
+      out["puntosRanura"] = (int)queHay.puntos;
+      out["ranuraValida"] = queHay.valida;
       sendJsonDoc(out);
       return;
     }
@@ -595,6 +700,14 @@ void ConfigProtocol::handleTrackLista() {
   out["topePorRanura"] = (int)TRACK_SLOT_PUNTOS;
   out["puntosVivo"] = (unsigned long)tracksVivoPuntos();
   out["vivoDioLaVuelta"] = tracksVivoDioLaVuelta();
+  // ★★ EL ESTADO DEL NVMC, A LA VISTA (2026-10-07) ★★
+  //   `nvmcVencidas` distinto de 0 significa que el aparato se ha quedado a punto de colgarse
+  //   escribiendo flash: la espera al NVMC se paso del tope y se salio por piernas.
+  //   ★ Va AQUI, en `track_list`, y no en `status`, por un motivo practico: es la respuesta que el
+  //     configurador YA pide al abrir la pestana de Guiado, asi que el dato llega sin tener que
+  //     anadir ni un comando ni un boton. Menos piezas, menos sitios donde fallar.
+  out["nvmcEsperas"] = (unsigned long)tracksNvmcEsperas();
+  out["nvmcVencidas"] = (unsigned long)tracksNvmcVencidas();
   JsonArray arr = out["ranuras"].to<JsonArray>();
   for (uint8_t s = 0; s < TRACK_SLOTS; s++) {
     TrackRanuraInfo inf;
@@ -714,6 +827,10 @@ void ConfigProtocol::handleLine(const char *line) {
     return;
   }
   const char *cmd = doc["cmd"] | "";
+  // ★ Y AQUI SE APUNTA QUE COMANDO ES, para que TODAS las respuestas que salgan de aqui digan a
+  //   quien contestan (ver `sendJsonDoc`). Se apunta ANTES de despachar, para que valga tambien
+  //   para los errores tempranos (json malo, dfu por Bluetooth, comando desconocido).
+  gCmdActual = cmd;
   // ★★ EL MODO GRABACION NO SE MANDA POR BLUETOOTH (orden del operador, 2026-09-17) ★★
   //   POR QUE: `dfu` reinicia el nodo en el cargador UF2, y el cargador se maneja copiando un
   //   fichero en una unidad que solo existe con el cable puesto. Si la orden llega por
@@ -796,17 +913,44 @@ void ConfigProtocol::handleLine(const char *line) {
     radioSetMuted(cfg_.txDisabled);
     radioApplyPower(cfg_.powerDbm);
     replyOkWithConfig(p);
-  } else if (strcmp(cmd, "track_begin") == 0) {
-    // ★★ TRASPASO DE TRACKS (2026-09-22). Los cuatro comandos contestan lo MISMO en las placas
-    //   que no son T-Echo: con el motivo, no con un "unknown cmd". Un "unknown cmd" haria
-    //   pensar al configurador que el protocolo esta mal, cuando lo que pasa es que esa placa
-    //   no tiene tracks (ver tracks.h).
-#ifdef TRACKS_DISPONIBLE
-    // ★★ TRASPASO DE TRACKS (2026-09-22) ★★ Ver la explicacion larga junto a sus manejadores.
-    //   OJO AL LEER EL BINARIO: las cadenas "track_begin"/"track_chunk"/... son argumentos de
-    //   `strcmp` y por tanto estan FUERA del `#ifdef`, asi que APARECEN EN TODOS los binarios
-    //   aunque la placa no tenga tracks. Buscarlas para comprobar que "esta" este codigo enganna:
-    //   lo que de verdad distingue a un T-Echo es que esten sus MANEJADORES.
+
+  // =====================================================================================
+  //  ★★★ LOS CUATRO COMANDOS DE TRACKS (2026-09-22 / arreglado el 2026-10-07) ★★★
+  //
+  //  ★★★ AQUI ESTABA EL FALLO QUE DEJABA MUDO AL `track_begin` ★★★
+  //  Estaba escrito ASI (dos ramas para el mismo comando):
+  //
+  //      } else if (strcmp(cmd, "track_begin") == 0) {       // (A) rama VACIA
+  //          // ...comentarios...
+  //    #ifdef TRACKS_DISPONIBLE
+  //      } else if (strcmp(cmd, "track_begin") == 0) {       // (B) la de verdad
+  //          handleTrackInicio(doc);
+  //      } else if (strcmp(cmd, "track_chunk") == 0) { ... }
+  //    #else
+  //      } else if (strcmp(cmd, "track_begin") == 0 || ...) { replyError(...); }
+  //    #endif
+  //      } else { replyError("unknown cmd"); }
+  //
+  //  Con `TRACKS_DISPONIBLE` definido (que es el caso del T-Echo), `track_begin` coincide en (A),
+  //  entra en esa rama, **y como (A) no hace nada, el if/else se acaba ahi**: la cadena (B) queda
+  //  dentro de (A) pero como un `else if` de un `if` ya elegido, o sea **inalcanzable**.
+  //  Resultado: `track_begin` NO CONTESTABA NUNCA. Y no es que se colgara: **salia sin decir nada**.
+  //
+  //  ★ COMO SE DESCUBRIO (con el nodo enchufado y hablandole por el puerto serie):
+  //      {"cmd":"track_begi"}      -> "unknown cmd"    (no coincide: llega al final)
+  //      {"cmd":"track_beginX"}    -> "unknown cmd"
+  //      {"cmd":"track_begin"}     -> NADA, jamas
+  //    **El nombre CORTO contestaba y el completo no.** Eso solo puede pasar si la rama del nombre
+  //    completo existe pero esta vacia, y fue lo que llevo al fallo.
+  //  ★ Y EXPLICA TODO LO QUE VIO EL OPERADOR: `track_begin` mudo -> el configurador se queda
+  //    esperando -> y al mandar el primer trozo, la ranura no se habia preparado nunca, de ahi el
+  //    «la ranura 0 tiene 0 puntos (NO preparada)». **La cabecera nunca se escribio porque la
+  //    funcion que la escribe no se llamaba.**
+  //  ★ LA LECCION: **dos `else if` con la misma condicion, uno vacio, es un agujero que no avisa.**
+  //    El compilador no dice nada (es codigo valido), y la rama vacia se lee como un comentario.
+  //    Ahora hay UNA sola rama por comando.
+  // =====================================================================================
+  #ifdef TRACKS_DISPONIBLE
   } else if (strcmp(cmd, "track_begin") == 0) {
     handleTrackInicio(doc);
   } else if (strcmp(cmd, "track_chunk") == 0) {
@@ -815,16 +959,26 @@ void ConfigProtocol::handleLine(const char *line) {
     handleTrackFin(doc);
   } else if (strcmp(cmd, "track_list") == 0) {
     handleTrackLista();
-#else
+  #else
     // En las placas sin tracks (las Faketec: su mapa de memoria no se ha comprobado, ver
     // tracks.h) los cuatro comandos contestan lo MISMO y con el motivo. Un "unknown cmd" haria
     // pensar al configurador que el protocolo esta mal, cuando lo que pasa es que esa placa no
     // tiene tracks. Se comprueba en UNA rama en vez de en cuatro para no repetir el mensaje.
+    //
+    // ★ OJO AL LEER EL BINARIO: las cadenas "track_begin"/"track_chunk"/... aparecen en TODOS los
+    //   binarios aunque la placa no tenga tracks, porque son argumentos de `strcmp`. Buscarlas para
+    //   comprobar que "esta" este codigo enganna: lo que distingue a un T-Echo es que esten sus
+    //   MANEJADORES, no las cadenas.
   } else if (strcmp(cmd, "track_begin") == 0 || strcmp(cmd, "track_chunk") == 0 ||
              strcmp(cmd, "track_end") == 0 || strcmp(cmd, "track_list") == 0) {
     replyError("los tracks solo existen en el T-Echo");
-#endif
+  #endif
   } else {
     replyError("unknown cmd");
   }
+  // ★ Y SE OLVIDA EL COMANDO AL SALIR (2026-10-06): `gCmdActual` apunta al texto del comando, que
+  //   vive en el documento JSON de ESTA llamada. Dejarlo puesto seria dejar un puntero a memoria
+  //   que ya no es del comando, y la siguiente respuesta sin comando (un aviso interno) saldria
+  //   con una etiqueta que no le toca. **Una etiqueta equivocada es peor que ninguna.**
+  gCmdActual = "";
 }

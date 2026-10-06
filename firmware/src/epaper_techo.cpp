@@ -106,6 +106,7 @@
 #include "tnc.h"
 #include "tracker.h"
 #include "tracks.h"     // modulo de tracks: solo existe en el T-Echo (ver tracks.h)
+#include "tracks_sesiones.h"   // ★ las SALIDAS: partir el registro en tracks (2026-10-06)
 #include <RadioLib.h>
 
 namespace {
@@ -2778,9 +2779,14 @@ const MenuItem kMenu[] = {
   //     - y al pulsarlas, `menuShort()` las intercepta por su `key` y ABRE la pantalla que
   //       toca, sin pasar por `menuEjecutaAccion` (que es para las acciones de verdad, como
   //       reiniciar o borrar). Con `ACT_NONE` no hay forma de que acaben en el editor.
-  {"Track en vivo", MK_ACTION, "tkVivo", 0,0,0, nullptr, nullptr, nullptr, ACT_NONE, kMAll},
-  {"Ranuras: -", MK_ACTION, "tkSlots", 0,0,0, nullptr, nullptr, nullptr, ACT_NONE, kMAll},
+  // ★★ LAS DOS FILAS DE TRACKS DEL MENU, REORGANIZADAS (2026-10-06) ★★
+  //   Antes eran TRES: "Track en vivo", "Ranuras: N/5" y "Volver a casa". Se ha quitado la del
+  //   track en vivo, y el motivo lo dijo el operador: **"Empezar nuevo" y la mezcla de cosas no
+  //   tenian sentido**. Los TRACKS GRABADOS (incluido el de ahora mismo) se miran DENTRO de
+  //   "Volver a casa", que es donde se usan; y aqui arriba se queda lo de siempre: por donde
+  //   vuelves, y las rutas que te has bajado.
   {"Volver a casa", MK_ACTION, "tkCasa", 0,0,0, nullptr, nullptr, nullptr, ACT_NONE, kMAll},
+  {"Ranuras: -", MK_ACTION, "tkSlots", 0,0,0, nullptr, nullptr, nullptr, ACT_NONE, kMAll},
 };
 constexpr int kMenuCount = (int)(sizeof(kMenu)/sizeof(kMenu[0]));
 const char *kMenuSections[] = {
@@ -2974,7 +2980,22 @@ void iconoPerfilPon(int perfil, int idx) {
 
 #define kMenuSectores 15   // 14 secciones + el final (indice de kMenuSectionFirst)
 // Mismo desplazamiento +1 que en kMenuSectionFirst por el item nuevo "WX cada (min)".
-const int kMenuSectionEnd[] = {1,5,10,12,18,24,27,39,41,47,50,54,57,60,63,63};
+//
+// ★★★ AQUI ESTABA EL FALLO QUE TUMBABA EL APARATO (2026-10-06) ★★★
+//   Ponia `..., 60, 63, 63` y TENIA QUE PONER `..., 60, 62, 62`.
+//   LA CUENTA: la ultima seccion ("Tracks") empieza en la posicion 60. Sus items son 2 (se le
+//   quito uno: "Empezar nuevo"), asi que ACABA EN LA 61, y el valor de la tabla —que apunta a
+//   "uno mas alla del ultimo"— es **62**. Y hay **62 items** en total (posiciones 0..61), asi que
+//   el ultimo valor tambien es 62.
+//   ★ CON EL 63, el pintado de la seccion hacia `kMenu[a + iAbs]` con `iAbs` hasta 2 (el bucle va
+//     de `r = top` a `total = itemCount + 2 = 4`), o sea **leia `kMenu[62]`, que NO EXISTE**:
+//     memoria que no es suya. **El aparato se caia justo al entrar en Tracks**, que es lo que
+//     reporto el operador: «entro a menu, bajo a tracks, confirmo, se queda bloqueado».
+//   ★ Y LA LECCION: **al quitar una fila hay que tocar la tabla de indices**, y esa tabla es un
+//     numero suelto en OTRO sitio del fichero, lejos de la fila que quitas. No lo avisa nadie.
+//     Ahora lo vigila `tools/cuenta_items_menu.py`, que cuenta los items de `kMenu[]` y comprueba
+//     que ningun indice se salga.
+const int kMenuSectionEnd[] = {1,5,10,12,18,24,27,39,41,47,50,54,57,60,62,62};
 
 bool menuIsOpen() { return gMenuOn; }
 bool menuIsEditing() { return gMenuEditing; }
@@ -3548,29 +3569,67 @@ static int  menuMainFilaSeccion(int r, int n) {
 //  de ajustes. Se entra desde la seccion Tracks del menu (ver `menuShort`).
 // ===========================================================================
 #ifdef TRACKS_DISPONIBLE
+// ★ DECLARACION PREVIA (2026-10-06): las pantallas de tracks VUELVEN al menu con esta funcion, y
+//   esta definida mas abajo (junto a `menuOpen`). Sin declararla aqui, el compilador no la conoce
+//   en este punto y el fichero no compila.
+void menuOpenEnSeccion(int seccion);
+
 enum TrkPant : uint8_t {
   TRK_PANT_NADA = 0,      // las pantallas de tracks NO estan abiertas
   TRK_PANT_LISTA,         // lista: track en vivo, las 5 ranuras, volver a casa
   TRK_PANT_ACCION,        // tras elegir un track: hacia adelante / atras / finalizar
-  TRK_PANT_GUIA,          // â˜… PANTALLA DE GUIADO: brujula + linea del track + datos
+  TRK_PANT_GUIA,          // ★ PANTALLA DE GUIADO: brujula + linea del track + datos
+  TRK_PANT_SALIDAS,       // ★★ LAS SALIDAS (2026-10-06): elegir por cual volver a casa
 };
 TrkPant gTrkPant = TRK_PANT_NADA;
 int     gTrkFila = 0;       // fila resaltada
 int     gTrkElegido = -1;   // que se ha elegido: -1 = vivo, 0..4 = ranura
-uint32_t gTrkUltActMs = 0;
 // â˜… Vista de la pantalla de guiado: false = VENTANA DE CERCA (1,5 km, la de navegar), true =
 //   track COMPLETO (la de mirar la ruta entera). Una pulsacion corta cambia de una a otra, como
 //   pidio el operador. Se queda en false por defecto: al empezar a guiar lo que se quiere es
 //   navegar, no ver el plano general.
 bool    gTrkZoomCompleto = false;
 
-// Filas de la pantalla de lista: 0=Volver, 1=Salir, 2=vivo, 3=EMPEZAR NUEVO, 4..8=ranuras,
-// 9=volver a casa
-constexpr int kTrkFilaVivo    = 2;
-constexpr int kTrkFilaNuevo   = 3;
-constexpr int kTrkFilaSlot0   = 4;
-constexpr int kTrkFilaCasa    = 9;
-constexpr int kTrkFilasLista  = 10;
+// ---------------------------------------------------------------------------
+//  ★★ LA PANTALLA DE SALIDAS: por cual vuelves a casa (2026-10-06) ★★
+//
+//  QUE ES: el aparato graba tus paseos en un solo track continuo, y el REGISTRO de viaje los parte
+//  en "salidas" (cada vez que pasa mucho tiempo sin balizas = se acabo la salida). Esta pantalla
+//  ensena esas salidas para que elijas por cual quieres volver.
+//
+//  ★ SE REHACE AL ABRIR, NO EN CADA REPINTADO: recorrer el registro y buscar las puntas de cada
+//    salida dentro del track cuesta (miles de lecturas de flash). Se hace una vez al entrar.
+// ---------------------------------------------------------------------------
+uint8_t gSalidasCuenta = 0;      // cuantas salidas hay en la lista
+bool    gSalidasLeidas = false;  // false = hay que rehacer la lista al pintar
+uint8_t gSalidasDelRegistro = 0; // ★ cuantas se sacaron del REGISTRO (para poder decirlo en pantalla)
+
+// ===========================================================================
+//  ★★ LAS FILAS DE LA LISTA DE TRACKS, REORGANIZADAS (2026-10-06) ★★
+//
+//  COMO ESTABA: 0=Volver, 1=Salir, 2=track vivo, 3="Empezar nuevo", 4..8=ranuras, 9=Volver a casa.
+//  Un popurri: TUS tracks grabados (el vivo), una ACCION ("Empezar nuevo") y las RUTAS QUE TE HAS
+//  BAJADO (las ranuras), todo mezclado. El operador lo dijo claro: «empezar nuevo es como raro»,
+//  y tenia razon, porque la pantalla mezclaba dos cosas distintas.
+//
+//  COMO ESTA AHORA, y es idea suya:
+//    0        "< Volver"
+//    1        "Salir"
+//    2        "Volver a casa"   -> abre LA LISTA DE TUS TRACKS GRABADOS
+//    3..7     las 5 ranuras     -> las rutas de Wikiloc que te has bajado
+//
+//  ★ POR QUE "EMPEZAR NUEVO" YA NO ESTA: servia para tirar el track y empezar donde estabas, y
+//    hacia falta cuando el track seguia creciendo entre salidas. Pero el aparato **se apaga solo
+//    cuando la bateria baja**, asi que cada salida ya empieza donde toca. **El aparato ya hace lo
+//    que hacia ese boton.** Su codigo se queda (ver ACT_TRK_NUEVO): solo se ha quitado la fila,
+//    y volver a ponerla es una linea.
+//
+//  ★ Y "VOLVER A CASA" ES UNA METAFORA, como dijo el operador: no es "casa", es **el punto donde
+//    empezaste**. Se usa el track de verdad, al reves, para volver a por donde viniste.
+// ===========================================================================
+constexpr int kTrkFilaCasa    = 2;
+constexpr int kTrkFilaSlot0   = 3;
+constexpr int kTrkFilasLista  = 8;    // 2 de navegacion + 1 de casa + 5 ranuras
 // Pantalla de accion: 0=Volver, 1=Salir, 2=adelante, 3=atras, 4=finalizar
 constexpr int kTrkFilasAccion = 5;
 
@@ -3580,7 +3639,6 @@ bool pantallaTracksActiva() { return gTrkPant != TRK_PANT_NADA; }
 void pantallaTracksAbre(TrkPant cual, int fila) {
   gTrkPant = cual;
   gTrkFila = fila;
-  gTrkUltActMs = millis();
   gMenuOn = false;          // las pantallas de tracks sustituyen al menu de ajustes
   gMenuCat = -1;
   gDirty = true;
@@ -3633,8 +3691,101 @@ const char *nombreRanura(uint8_t slot, char *b, size_t n) {
   return b;
 }
 
-void pantallaTracksPinta() {
-  // ★★ EL SALTO DE FILA, EN UN SOLO SITIO (2026-09-22) ★★
+// ---------------------------------------------------------------------------
+//  ★★ LA PANTALLA DE SALIDAS (2026-10-06) ★★
+//
+//  Se entra desde "Volver a casa". Ensena las salidas que el aparato tiene grabadas, de la mas
+//  reciente a la mas vieja, con su FECHA, su HORA y sus METROS. Eliges una y te guia hacia atras
+//  por ella.
+//
+//  ★ LAS FILAS SON: "< Volver", "Salir" y luego una por salida. Se navega con el mismo boton que
+//    todo lo demas (pulsacion corta para bajar de fila), como pidio el operador.
+//
+//  ★ SOLO SALEN LAS SALIDAS QUE TODAVIA TIENEN CAMINO. El track es un anillo de ~68 km: cuando se
+//    llena empieza a borrar por el principio, y las salidas mas viejas se quedan sin puntos. Una
+//    lista que ofrece algo que ya no existe es mentir, asi que esas no aparecen.
+// ---------------------------------------------------------------------------
+void pantallaSalidasPinta() {
+  static constexpr int rowH2 = 20;
+  static constexpr int y0 = 30;
+
+  // ★ LA LISTA SE REHA CE AQUI, UNA VEZ AL ENTRAR: recorrer el registro y anclar cada salida al
+  //   track cuesta miles de lecturas de flash, y no se puede hacer en cada repintado.
+  if (!gSalidasLeidas) {
+    gSalidasCuenta = tracksSesionesRehace();
+    gSalidasDelRegistro = tracksSesionesDelRegistro();
+    gSalidasLeidas = true;
+  }
+
+  drawTextCenter(12, "SALIDAS", 0);   // escala 0: la fuente DIN 10
+
+  const int total = 2 + (int)gSalidasCuenta;
+  const int visibles = 7;
+  int top = gTrkFila - (visibles / 2);
+  if (top < 0) top = 0;
+  if (top > total - visibles) top = (total - visibles < 0) ? 0 : total - visibles;
+
+  int y = y0;
+  for (int r = top; r < total && y < 186; r++, y += rowH2) {
+    const bool sel = (r == gTrkFila);
+    if (r == 0) { filaTrk(r, y, "< Volver", sel); continue; }
+    if (r == 1) { filaTrk(r, y, "Salir", sel); continue; }
+
+    const uint8_t idx = (uint8_t)(r - 2);
+    TrackSesion s;
+    if (!tracksSesionesLee(idx, &s)) { filaTrk(r, y, "?", sel); continue; }
+
+    // ★ "06/10 08:42 3420m" = 18 caracteres. A escala 0 (la DIN 10, de ancho variable) cabe de
+    //   sobra en los 200 px del panel; a escala 2 NO cabria (18 x 12 = 216 px).
+    char b[28];
+    if (s.year == 0) {
+      // ★ SIN HORA GPS: se dice ESO, no "00/00 00:00".
+      //   El track vivo se empieza a grabar en cuanto hay fijacion, y la hora del GPS puede
+      //   tardar un rato mas en llegar. Antes se ponia "Sin hora GPS" en la fila del track en
+      //   vivo; esa fila ya no existe, asi que el texto se trae aqui: un "00/00 00:00" no dice
+      //   nada y parece un fallo del aparato.
+      snprintf(b, sizeof b, "sin hora GPS  %lum", (unsigned long)s.metros);
+    } else {
+      snprintf(b, sizeof b, "%02u/%02u %02u:%02u %lum", (unsigned)s.day, (unsigned)s.month,
+               (unsigned)s.hour, (unsigned)s.minute, (unsigned long)s.metros);
+    }
+    filaTrk(r, y, b, sel);
+  }
+
+  // El pie: si no hay ninguna salida, se dice POR QUE, no se deja la pantalla vacia.
+  // ★ ESTO FALTABA, Y ES LA RAZON DE QUE EL OPERADOR VIERA "UNA PANTALLA QUE NO HACE NADA": sin
+  //   salidas, la pantalla se pintaba VACIA (solo el titulo) y no habia forma de saber si estaba
+  //   rota, sin datos, o esperando algo. Una pantalla en blanco nunca es una respuesta.
+  //
+  // ★★ Y AHORA DICE LOS NUMEROS (2026-10-06) ★★
+  //   El operador reporto «sale sin tracks grabados, pero el aparato tiene un track de hoy y otros
+  //   de otros dias». Para averiguar POR QUE sin poder conectar un depurador, la pantalla ensena
+  //   los dos numeros que deciden todo:
+  //     - puntos: cuantos puntos dice el modulo que tiene el track. Si son 0 o 1, la lista se
+  //       queda vacia A PROPOSITO (con menos de dos puntos no hay camino que seguir), y el aviso
+  //       es correcto aunque el operador recuerde haber andado.
+  //     - del registro: cuantas salidas se han podido sacar del registro de viaje.
+  //   ★ Es la misma idea que el resto del proyecto: **que el aparato diga lo que le pasa**, en vez
+  //     de dejarnos adivinar desde el ordenador. Un dato en pantalla vale mas que una teoria.
+  if (gSalidasCuenta == 0) {
+    drawText(14, 56, "Sin tracks grabados", 0);
+    char linea[32];
+    snprintf(linea, sizeof linea, "puntos: %lu", (unsigned long)tracksVivoPuntos());
+    drawText(14, 80, linea, 0);
+    snprintf(linea, sizeof linea, "del registro: %u", (unsigned)gSalidasDelRegistro);
+    drawText(14, 100, linea, 0);
+    drawText(14, 130, "Anda con el nodo", 0);
+    drawText(14, 148, "encendido y saldra", 0);
+    drawText(14, 166, "tu ruta aqui.", 0);
+  } else {
+    char pie[32];
+    snprintf(pie, sizeof pie, "%u track%s", (unsigned)gSalidasCuenta,
+             (gSalidasCuenta == 1) ? "" : "s");
+    drawTextCenter(178, pie, 0);
+  }
+}
+
+void pantallaTracksPinta() {  // ★★ EL SALTO DE FILA, EN UN SOLO SITIO (2026-09-22) ★★
   //   `filaTrk` dibuja el recuadro de 20 px de alto, pero el bucle que coloca las filas avanzaba
   //   de 18 en 18. El recuadro de una fila se metia 2 px en la siguiente, y el desfase se acumula
   //   hacia abajo: en las ultimas filas (donde esta "Volver a casa") el recuadro quedaba
@@ -3661,43 +3812,11 @@ void pantallaTracksPinta() {
       const bool sel = (r == gTrkFila);
       if (r == 0) { filaTrk(r, y, "< Volver", sel); continue; }
       if (r == 1) { filaTrk(r, y, "Salir", sel); continue; }
-      if (r == kTrkFilaVivo) {
-        // Solo FECHA Y HORA, como pidio el operador. Los puntos NO se pueden anadir en esta
-        // fila: "Vivo 12/07 18:42 1240pt" son 23 caracteres y a escala 2 el tope son 16 (200 px),
-        // o sea 274 px: SE SALIA DEL PANEL. Los puntos se ven al entrar (y en el configurador).
-        char b[26];
-        uint16_t yy = 0; uint8_t mo = 0, dd = 0, hh = 0, mm = 0;
-        if (tracksVivoCuando(&yy, &mo, &dd, &hh, &mm)) {
-          snprintf(b, sizeof b, "%02u/%02u %02u:%02u", (unsigned)dd, (unsigned)mo,
-                   (unsigned)hh, (unsigned)mm);
-        } else {
-          // â˜… "Sin hora GPS" y no "sin hora": ver la nota de la otra copia de este texto. Sin
-          //   decir de donde tendria que venir la hora, parece un fallo del aparato.
-          snprintf(b, sizeof b, "Sin hora GPS");
-        }
-        // â˜… Y SI NO SE ESTA GRABANDO, SE DICE AQUI (2026-09-22). Este es el sitio del aviso, no
-        //   la cabecera: aqui es donde el operador mira cuando quiere saber que esta pasando.
-        //   â˜… SE SUSTITUYE LA FECHA, NO SE AÃ‘ADE: "12/07 18:42 NO GRABA" son 20 caracteres y a
-        //     escala 2 el tope son 15. Cuando no se graba, lo que hay que saber es ESO; la fecha
-        //     de cuando empezo es secundaria.
-        if (tracksVivoActivo() && !tracksVivoGrabando()) {
-          snprintf(b, sizeof b, "NO GRABA");
-        }
-        filaTrk(r, y, b, sel);
-        continue;
-      }
-      if (r == kTrkFilaNuevo) {
-        // â˜…â˜… "EMPEZAR NUEVO" (2026-09-22): sin esta fila, el track en vivo NO SE PODIA EMPEZAR NI
-        //   BORRAR DESDE NINGUN SITIO. El nodo grababa desde que cogia posicion y, al arrancar,
-        //   "rescataba" el track anterior: seguia grabando el mismo para siempre.
-        //   Consecuencia real: llegabas al monte y "Volver a casa" te mandaba... a tu casa (el
-        //   punto mas antiguo del anillo), no al coche donde dejaste el nodo.
-        //   Ahora: pulsando aqui se tira el track en vivo y se empieza uno nuevo DESDE DONDE
-        //   ESTAS, que es lo que se espera al empezar una ruta. Lo cazo una revision
-        //   independiente de experiencia de uso.
-        filaTrk(r, y, "Empezar nuevo", sel);
-        continue;
-      }
+      // ★ "VOLVER A CASA" ES UNA METAFORA, como dijo el operador: no es "casa", es EL PUNTO DONDE
+      //   EMPEZASTE. Y al pulsarla NO se arranca nada: se abre la lista de TUS tracks grabados
+      //   (`TRK_PANT_SALIDAS`), que es donde de verdad se elige por cual volver.
+      if (r == kTrkFilaCasa) { filaTrk(r, y, "Volver a casa", sel); continue; }
+      // Y debajo, las rutas que el operador se ha bajado de Wikiloc: otra cosa distinta.
       if (r >= kTrkFilaSlot0 && r < kTrkFilaSlot0 + (int)TRACK_SLOTS) {
         char b[24];
         filaTrk(r, y, nombreRanura((uint8_t)(r - kTrkFilaSlot0), b, sizeof b), sel);
@@ -4042,48 +4161,74 @@ void pantallaTracksPinta() {
 //  `menuLong` cuando `pantallaTracksActiva()`: asi el boton se comporta igual que en el menu.
 // ---------------------------------------------------------------------------------------
 void pantallaTracksNavega() {
-  gTrkUltActMs = millis();
-  const int total = (gTrkPant == TRK_PANT_LISTA) ? kTrkFilasLista : kTrkFilasAccion;
+  int total;
+  if (gTrkPant == TRK_PANT_SALIDAS) {
+    total = 2 + (int)gSalidasCuenta;      // "< Volver", "Salir" y una por salida
+  } else if (gTrkPant == TRK_PANT_LISTA) {
+    total = kTrkFilasLista;
+  } else {
+    total = kTrkFilasAccion;
+  }
+  if (total < 1) total = 1;
   gTrkFila = (gTrkFila + 1) % total;      // wrap, como en el resto del menu
   gDirty = true;
 }
 
 void pantallaTracksCorto() {
-  gTrkUltActMs = millis();
+  // ---------------------------------------------------------------------
+  //  ★ LA PANTALLA DE SALIDAS (2026-10-06)
+  // ---------------------------------------------------------------------
+  if (gTrkPant == TRK_PANT_SALIDAS) {
+    // ★ "< Volver" VUELVE AL MENU, a la seccion de Tracks (2026-10-06).
+    //   Antes volvia a la lista intermedia (`TRK_PANT_LISTA`), y como esa lista tambien tenia un
+    //   "Volver a casa", el operador se quedaba dando vueltas entre dos pantallas. Su queja:
+    //   «volver no funciona». Tenia razon: no volvia, **rebotaba**.
+    if (gTrkFila == 0) {
+      pantallaTracksCierra();
+      menuOpenEnSeccion(14);        // 14 = la seccion "Tracks" (ver kMenuSections)
+      return;
+    }
+    if (gTrkFila == 1) { pantallaTracksCierra(); menuClose(); return; }   // "Salir"
+    // Una salida: se guia HACIA ATRAS por su trozo de track (del final al principio, que es
+    // lo que significa "volver a casa").
+    const uint8_t idx = (uint8_t)(gTrkFila - 2);
+    TrackSesion s;
+    if (!tracksSesionesLee(idx, &s) || !s.valida) {
+      displayPopupWait("Esa salida ya no tiene track", 3000);
+      return;
+    }
+    const uint32_t desde = tracksSesionDesde(idx);
+    const uint32_t hasta = tracksSesionHasta(idx);
+    if (!tracksGuiaEmpiezaTrozo(desde, hasta, true /* alReves */)) {
+      displayPopupWait("Esa salida no tiene puntos suficientes", 3000);
+      return;
+    }
+    gTrkZoomCompleto = false;
+    pantallaTracksAbre(TRK_PANT_GUIA, 0);
+    return;
+  }
+
   if (gTrkPant == TRK_PANT_LISTA) {
     if (gTrkFila == 0) { pantallaTracksCierra(); return; }     // "< Volver"
     if (gTrkFila == 1) { pantallaTracksCierra(); menuClose(); return; }   // "Salir"
     if (gTrkFila == kTrkFilaCasa) {
-      // â˜…â˜… "VOLVER A CASA" LLEVA A CASA DE VERDAD (2026-09-22) â˜…â˜…
-      //   Antes abria la LISTA de tracks en la fila de esta misma opcion, o sea el MISMO menu
-      //   otra vez: el rotulo prometia un atajo y entregaba una lista. Lo cazo una revision de
-      //   uso independiente.
-      //   AHORA arranca el guiado HACIA ATRAS sobre el track en vivo, que es lo que el usuario
-      //   espera al pulsar eso. Si no hay track, se dice por que (como antes).
-      if (!tracksVivoActivo() || tracksVivoPuntos() < 2) {
-        snprintf(gLinea1, sizeof gLinea1, "Sin track vivo");
-        gLinea2[0] = '\0';
-        displayPopupWait("Todavia no hay track grabado", 3000);
-        return;
-      }
-      if (!tracksGuiaEmpieza(TRK_FUENTE_VIVO, -1, true)) {
-        displayPopupWait("Ese track no tiene puntos suficientes", 3000);
-        return;
-      }
-      gTrkZoomCompleto = false;
-      pantallaTracksAbre(TRK_PANT_GUIA, 0);
+      // ★★ "VOLVER A CASA" AHORA ENSENA LAS SALIDAS (2026-10-06) ★★
+      //   ANTES arrancaba el guiado directamente sobre el track en vivo ENTERO. El problema, que
+      //   encontro el operador: el track en vivo es UNA sola tirada con las salidas de varios dias
+      //   pegadas, asi que "el principio" podia ser el de anteayer, y no habia forma de elegir por
+      //   cual volver.
+      //   AHORA abre la pantalla de SALIDAS: el aparato parte su registro en salidas (cada vez que
+      //   pasa mucho tiempo sin balizas = se acabo la salida) y el operador elige la suya. Al
+      //   elegirla se guia HACIA ATRAS por el trozo de track de ESA salida.
+      gSalidasLeidas = false;        // que se rehaga la lista al entrar (el track va cambiando)
+      gSalidasCuenta = 0;
+      pantallaTracksAbre(TRK_PANT_SALIDAS, 2);   // fila 2 = la salida mas reciente
       return;
     }
-    // Filas de track: el vivo (fila 2) o una ranura.
-    if (gTrkFila == kTrkFilaVivo) {
-      if (!tracksVivoActivo() || tracksVivoPuntos() < 2) {
-        displayPopupWait("Todavia no hay track grabado", 3000);
-        return;
-      }
-      gTrkElegido = -1;
-      pantallaTracksAbre(TRK_PANT_ACCION, 2);
-      return;
-    }
+    // ★ Y DEBAJO SOLO QUEDAN LAS RANURAS: las rutas de Wikiloc que se ha bajado el operador.
+    //   (Antes habia aqui tambien el track en vivo y "Empezar nuevo", que se han quitado: el
+    //   primero esta ahora dentro de "Volver a casa", y el segundo ya no hace falta. Ver la nota
+    //   larga donde se declaran las filas, arriba del todo.)
     if (gTrkFila >= kTrkFilaSlot0 && gTrkFila < kTrkFilaSlot0 + (int)TRACK_SLOTS) {
       const uint8_t slot = (uint8_t)(gTrkFila - kTrkFilaSlot0);
       TrackRanuraInfo inf;
@@ -4100,14 +4245,19 @@ void pantallaTracksCorto() {
   }
 
   if (gTrkPant == TRK_PANT_ACCION) {
-    if (gTrkFila == 0) { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }   // "< Volver"
+    // ★★ OJO CON ESTE `2`, QUE AHORA ESTA MAL (2026-10-06) ★★
+    //   Esta pantalla se abre SIEMPRE desde una ranura, y antes la primera ranura de la lista era
+    //   la fila 2... pero al reorganizar las filas, **la 2 es ahora "Volver a casa"**. Volver con
+    //   el `2` dejaba el cursor en "Volver a casa", o sea que el operador **creia estar en una
+    //   ranura y estaba en otra fila**. Se usa la constante, que no se puede quedar desfasada.
+    if (gTrkFila == 0) { pantallaTracksAbre(TRK_PANT_LISTA, kTrkFilaSlot0); return; }   // "< Volver"
     if (gTrkFila == 1) { pantallaTracksCierra(); menuClose(); return; }     // "Salir"
     if (gTrkFila == 4) {
       // "Finalizar guiado": se para el motor y se vuelve a la lista de tracks, que es donde
       // estaba. Si no habia guiado en marcha, se dice (no se finge que se ha hecho algo).
       if (!tracksGuiaActivo()) { displayPopupWait("No hay guiado en marcha", 3000); return; }
       tracksGuiaTermina();
-      pantallaTracksAbre(TRK_PANT_LISTA, 2);
+      pantallaTracksAbre(TRK_PANT_LISTA, kTrkFilaSlot0);
       return;
     }
     // â˜…â˜… "Hacia adelante" (2) y "Hacia atras" (3): AQUI ARRANCA EL GUIADO DE VERDAD â˜…â˜…
@@ -4135,23 +4285,31 @@ void pantallaTracksCorto() {
 //      guiado: solo se sale a mirarlo, que es lo que se espera al pulsar largo.
 // ---------------------------------------------------------------------------------------
 void pantallaGuiaCorto() {
-  gTrkUltActMs = millis();
   gTrkZoomCompleto = !gTrkZoomCompleto;
   gDirty = true;
 }
 
 void pantallaGuiaLargo() {
-  gTrkUltActMs = millis();
-  // Vuelve a la LISTA de tracks (no al menu principal): desde ahi se elige el track y se llega
-  // a "Finalizar guiado" en dos pulsaciones, que es lo que pidio el operador.
-  pantallaTracksAbre(TRK_PANT_LISTA, 2);
+  // ★ DE LA PANTALLA DE GUIADO SE VUELVE AL MENU DE TRACKS, no a la lista intermedia
+  //   (2026-10-06). La lista intermedia ya no existe como puerta: se entraba a ella desde el menu
+  //   y llevaba a las mismas dos cosas que el menu, asi que sobraba. Volver aqui deja al operador
+  //   donde puede elegir otra vez, que es lo que espera al pulsar largo.
+  pantallaTracksCierra();
+  menuOpenEnSeccion(14);        // 14 = la seccion "Tracks"
 }
 
 void pantallaTracksLargo() {
-  gTrkUltActMs = millis();
   // La pulsacion LARGA sube un nivel, igual que en el menu: de la pantalla de accion a la
-  // lista, y de la lista se cierra. Asi el gesto dice lo mismo en todas partes.
-  if (gTrkPant == TRK_PANT_ACCION) { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }
+  // lista, y de la lista al menu. Asi el gesto dice lo mismo en todas partes.
+  if (gTrkPant == TRK_PANT_ACCION) { pantallaTracksAbre(TRK_PANT_LISTA, kTrkFilaSlot0); return; }
+  // ★ Y DE LAS SALIDAS SE VUELVE AL MENU (2026-10-06), por el mismo motivo que en la de guiado:
+  //   la lista intermedia sobraba, y volver a ella dejaba al operador dando vueltas entre dos
+  //   pantallas que ensenaban lo mismo.
+  if (gTrkPant == TRK_PANT_SALIDAS) {
+    pantallaTracksCierra();
+    menuOpenEnSeccion(14);
+    return;
+  }
   pantallaTracksCierra();
 }
 
@@ -4159,14 +4317,19 @@ void pantallaTracksLargo() {
 
 void menuNavigate() {
   // â˜… Las pantallas de TRACKS van primero: cuando estan abiertas SUSTITUYEN al menu, asi que
-  //   se llevan el boton. Se comportan como el menu (wrap de filas, auto-cierre de 15 s).
+  //   se llevan el boton. Navegan por sus filas con wrap, como el menu.
 #ifdef TRACKS_DISPONIBLE
   if (pantallaTracksActiva()) {
-    // â˜… La pantalla de GUIADO no se cierra por tiempo (ver la explicacion en displayRefresh), y
-    //   ademas no tiene filas que recorrer: el toque corto cambia de vista (de cerca / track
-    //   completo). Las otras dos SI navegan por sus filas y SI se cierran por inactividad.
+    // ★ NINGUNA PANTALLA DE TRACKS SE CIERRA POR TIEMPO (2026-10-06).
+    //   Antes la de lista y la de accion se cerraban a los 15 s, como el menu. Y estaba mal por
+    //   dos motivos que se juntan:
+    //     1. Una LISTA se lee, y el aparato no se refresca solo (es tinta electronica): se queda
+    //        pintada mientras el operador la mira. A los 15 s, la siguiente pulsacion **cerraba
+    //        la pantalla en vez de moverse por la lista**: el boton parecia no hacer nada.
+    //     2. Y lo peor: si el guiado estuviera en marcha, cerrarse por tiempo lo dejaria guiando
+    //        **sin ensenarlo**.
+    //   Se sale como en la pantalla de guiado: pulsacion larga (sube un nivel) o la fila «Salir».
     if (gTrkPant == TRK_PANT_GUIA) { pantallaGuiaCorto(); return; }
-    if ((uint32_t)(millis() - gTrkUltActMs) > 15000) { pantallaTracksCierra(); return; }
     pantallaTracksNavega();
     return;
   }
@@ -4254,10 +4417,9 @@ void menuNavigate() {
 
 void menuShort() {
 #ifdef TRACKS_DISPONIBLE
-  // â˜… Las pantallas de tracks se llevan el boton cuando estan abiertas (sustituyen al menu).
+  // ★ Las pantallas de tracks se llevan el boton cuando estan abiertas (sustituyen al menu).
   if (pantallaTracksActiva()) {
     if (gTrkPant == TRK_PANT_GUIA) { pantallaGuiaCorto(); return; }   // no se cierra por tiempo
-    if ((uint32_t)(millis() - gTrkUltActMs) > 15000) { pantallaTracksCierra(); return; }
     pantallaTracksCorto();
     return;
   }
@@ -4357,13 +4519,47 @@ void menuShort() {
   if (iAbs < (b - a)) {
     const MenuItem &it = kMenu[a + iAbs];
 #ifdef TRACKS_DISPONIBLE
-    // â˜…â˜… LAS TRES FILAS DE TRACKS ABREN SU PANTALLA, NO EJECUTAN UNA ACCION (2026-09-22) â˜…â˜…
+    // ★★ LAS TRES FILAS DE TRACKS ABREN SU PANTALLA, NO EJECUTAN UNA ACCION (2026-09-22) ★★
     //   Se interceptan AQUI, antes del despacho de acciones, y por su `key`. Asi no hay forma
     //   de que acaben en `menuEjecutaAccion` (que es para reiniciar, borrar y demas) ni en el
     //   editor de valores: son puertas, no ajustes. Ver `pantallaTracks()`.
-    if (it.key && !strcmp(it.key, "tkVivo"))  { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }
-    if (it.key && !strcmp(it.key, "tkSlots")) { pantallaTracksAbre(TRK_PANT_LISTA, 2); return; }
-    if (it.key && !strcmp(it.key, "tkCasa"))  { pantallaTracksAbre(TRK_PANT_LISTA, 7); return; }
+    //
+    // ★★★ «VOLVER A CASA» LLEVABA A UNA RANURA VACIA, Y NO HACIA NADA (2026-10-06) ★★★
+    //   ESTABA PUESTO UN `7` CLAVADO A MANO. Y la fila de «Volver a casa» es la **9**
+    //   (`kTrkFilaCasa`). Resultado exacto de lo que vio el operador: pulsabas «Volver a casa» en
+    //   el menu, la pantalla abria la lista **posada en la RANURA 4** (una fila de ranura), y las
+    //   ranuras piden **pulsacion LARGA**: al pulsar corto **NO PASABA ABSOLUTAMENTE NADA**.
+    //   Lo conto asi: «he probado a activar la opcion pero no sale el track actual, de hecho en
+    //   ese menu no funciona ninguna opcion». Las dos frases son este `7`.
+    //   ★ Y LA LECCION, que es la de siempre en este proyecto: **un numero clavado a mano al lado
+    //     de una constante acaba separandose de ella**. Aqui el numero era 7 y la constante 9, y
+    //     no habia nada que lo comprobara. Ahora se usan LAS CONSTANTES, y ademas hay un
+    //     comprobador (`tools/prueba_filas_menu_tracks.py`) que mira que estas filas apunten a
+    //     filas que existen y que sean las suyas.
+    //
+    // ★★ Y SON DOS FILAS, NO TRES (2026-10-06): se ha quitado la del track en vivo, que ahora se
+    //   mira dentro de "Volver a casa" (que es donde se usa). Ver la nota larga donde se declaran
+    //   las filas de la lista de tracks.
+    //
+    // ★★★ Y AQUI SE ABRE LA PANTALLA DE VERDAD, NO UNA LISTA INTERMEDIA (2026-10-06) ★★★
+    //   El primer intento abria `TRK_PANT_LISTA` (la lista con "Volver a casa" y las ranuras), y
+    //   eso dejaba al operador con **dos pantallas para lo mismo**: el menu le llevaba a una lista
+    //   que no servia para nada, y dentro estaba otra vez "Volver a casa". Su queja, textual:
+    //     «dentro de volver a casa sale volver salir volver a casa (no tiene sentido esto)»
+    //   ★ Y encima "< Volver" no volvia, porque iba de una de esas dos pantallas a **la otra**:
+    //     un bucle. Ahora "< Volver" vuelve AL MENU.
+    //   ★ AHORA: "Volver a casa" abre directo la pantalla de TUS TRACKS GRABADOS, y "Ranuras"
+    //     abre las rutas de Wikiloc. Una pantalla cada cosa, y ninguna de mas.
+    if (it.key && !strcmp(it.key, "tkCasa")) {
+      gSalidasLeidas = false;      // que se rehaga la lista al entrar (el track va cambiando)
+      gSalidasCuenta = 0;
+      pantallaTracksAbre(TRK_PANT_SALIDAS, 0);   // fila 0 = "< Volver"
+      return;
+    }
+    if (it.key && !strcmp(it.key, "tkSlots")) {
+      pantallaTracksAbre(TRK_PANT_LISTA, kTrkFilaSlot0);
+      return;
+    }
 #endif
     gMenuEditItemAbs = a + iAbs;
     if (it.kind == MK_ACTION) { menuEjecutaAccion(it.action); }
@@ -4413,6 +4609,27 @@ void menuLong() {
 }
 
 void menuOpen() { gMenuOn = true; gMenuCat = -1; gMenuIdx = 0; gMenuPerfMode = 0; gMenuLastActMs = millis(); displayBacklightKick(); gDirty = true; }
+
+/**
+ * Abre el menu DIRECTAMENTE en una seccion, con el cursor en su primera fila (2026-10-06).
+ *
+ * PARA QUE: al salir de las pantallas de tracks con "< Volver" hay que dejar al operador **donde
+ * estaba**, o sea en la seccion de Tracks del menu, no en la lista de secciones. Si volviera a la
+ * lista de secciones, tendria que bajar otra vez hasta Tracks cada vez: con un boton, eso son
+ * diez pulsaciones por vuelta.
+ *
+ * ★ Se reutiliza `menuOpen()` a proposito en vez de tocar `gMenuOn` a mano: asi se hace TODO lo que
+ *   hay que hacer al abrir el menu (marcar actividad, encender la luz, pedir repintado). Copiar
+ *   esas cuatro lineas aqui seria la forma segura de que un dia una se quede atras.
+ */
+void menuOpenEnSeccion(int seccion) {
+  menuOpen();
+  const int n = menuMainSecCount();
+  if (seccion < 0 || seccion >= n) return;      // seccion imposible: se queda en la lista
+  gMenuCat = seccion;
+  gMenuIdx = 0;                                  // fila 0 = "< Volver" de la seccion
+  gDirty = true;
+}
 // Al cerrar se olvida cualquier confirmacion pendiente: si no, al volver a entrar en el
 // menu con la ventana de 3 s todavia viva, la primera pulsacion larga ejecutaria el
 // borrado sin preguntar (justo lo que este arreglo viene a impedir).
@@ -4740,25 +4957,6 @@ void menuPinta() {
         //   `TRACKS_DISPONIBLE`: en las Faketec esta seccion no existe (ver tracks.h), y sus
         //   filas se pintan con la etiqueta de respaldo de `kMenu[]`.
 #ifdef TRACKS_DISPONIBLE
-        if (it.key && !strcmp(it.key, "tkVivo")) {
-          // â˜… FECHA Y HORA, como pidio el operador (nada de nombres de ruta). Es la fecha en que
-          //   EMPEZO el track en vivo, y sobrevive a un reinicio. Si el GPS aun no tenia hora
-          //   cuando empezo, se dice: inventar una fecha seria mentir en el diario del nodo.
-          char b[26];
-          uint16_t y = 0; uint8_t mo = 0, d = 0, h = 0, mi = 0;
-          if (tracksVivoCuando(&y, &mo, &d, &h, &mi)) {
-            snprintf(b, sizeof b, "Vivo %02u/%02u %02u:%02u", (unsigned)d, (unsigned)mo,
-                     (unsigned)h, (unsigned)mi);
-          } else {
-            // â˜…â˜… "SIN HORA GPS" Y NO "SIN HORA" (2026-09-22) â˜…â˜…
-            //   Lo pidio el operador: "una persona normal no va a entender eso". Tenia razon: sin
-            //   decir de DONDE tendria que venir la hora, parece un fallo del aparato. Con "GPS"
-            //   se entiende que es el satelite el que todavia no la ha dado.
-            snprintf(b, sizeof b, "Sin hora GPS");
-          }
-          drawText(14, y, b, esc);
-          continue;
-        }
         if (it.key && !strcmp(it.key, "tkSlots")) {
           char b[24];
           int n = 0;
@@ -5891,8 +6089,19 @@ void dibujaEscena() {
     if (gTrkPant == TRK_PANT_GUIA) {
       pantallaTracksPinta(); gDirty = true; return;
     }
-    if ((uint32_t)(millis() - gTrkUltActMs) > 15000) { pantallaTracksCierra(); }
-    else { pantallaTracksPinta(); gDirty = true; return; }
+    // ★★ G4 (2026-10-06): Y AQUI HABIA OTRO CIERRE POR TIEMPO, QUE SOBRABA ★★
+    //   Estaba puesto en las pantallas de tracks igual que en el menu, con 15 segundos. Pero una
+    //   LISTA no es un menu: al menu se entra, se elige y se sale, y cerrarlo solo si te olvidas
+    //   esta bien. Una lista se LEE, y el aparato no se refresca solo (es tinta electronica): se
+    //   queda pintada. Asi que pasaban los 15 segundos mientras el operador miraba, y **la
+    //   siguiente pulsacion CERRABA la pantalla en vez de moverse por la lista**.
+    //   El operador lo conto asi: «muevo hasta ahi, toque corto en boton, no hace nada, no elige
+    //   la ruta ni hace nada, simplemente se queda ahi».
+    //   ★ AHORA NO HAY CIERRE POR TIEMPO. Se sale como en la pantalla de guiado: pulsacion larga
+    //     (sube un nivel) o la fila «Salir». Es coherente con que la de guiado tampoco se cierre,
+    //     y quita de en medio la unica forma de que el boton «no haga nada».
+    if (gTrkPant == TRK_PANT_SALIDAS) { pantallaSalidasPinta(); gDirty = true; return; }
+    pantallaTracksPinta(); gDirty = true; return;
   }
 #endif
   if (menuIsOpen()) {

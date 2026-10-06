@@ -141,37 +141,37 @@ fichero con **todo** lo que lleva grabado, así que siempre podrás dejarla como
 
 | Tu placa | Fichero |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 > 📌 **Los cuatro ficheros de `firmware/release/` son estos** (los nombres exactos, para
 > que no haya dudas al buscar en la carpeta):
-> `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2`,
-> `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2`,
-> `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` y
-> `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2`.
+> `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2`,
+> `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2`,
+> `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` y
+> `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2`.
 
 > ✅ **Cada binario dice lo que lleva (contador de compilación arreglado el 2026-09-16)**: el
 > número sube **cuando cambia el código**, así que el que contesta el nodo por USB
-> (`1.0alpha b131`) identifica el firmware que lleva dentro, y coincide con el nombre del
+> (`1.0alpha b157`) identifica el firmware que lleva dentro, y coincide con el nombre del
 > fichero. Hasta esa noche el contador estuvo clavado en `b9` (un fallo del propio contador:
 > siete cambios de firmware seguidos salieron con el mismo número), así que **si tienes
-> descargado un `..._b131_...`, es el mismo firmware que aquel `b13` pero con el número viejo**:
+> descargado un `..._b157_...`, es el mismo firmware que aquel `b13` pero con el número viejo**:
 > quédate siempre con el número más alto.
 >
 > | Fichero | Fecha | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 743936 | `B77AE319FD2F65A9372EAB24B99D8F627BFA081F4DDB48D7D32E848B34518285` |
-> | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 743936 | `9A745E8B3383421E85FF3BEC0C519DE38EAC2A055FF7771B34054CEAE9F288EC` |
-> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1082880 | `E0212001E623CEDE2FC245AD9C22309FB50AC15FB730828947F28F09C78C6801` |
-> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1078784 | `CA625160924894A5FCE30776436B608CEEEB3D72653AB72C2F9972AE3AF86D3F` |
+> | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 744960 | `33DC4200254323DE32AF3551601E67D32CB580DAE0A0580708D3132F58C9F774` |
+> | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 744960 | `9C8C24D980CDF2B68B8BAF5643BCE4DA52CB83676EAE9158A5A5E70AEE5175D7` |
+> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1094656 | `1DD3A5A4C26C1B96908ACA6866A39995A841E5429D0C5B7A540219B73CCEDA0B` |
+> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1091072 | `D5C93A07E87D1B3791B79466256F258ABA7A3EE65384001EBD9BF98A8A445A46` |
 >
-> Los cuatro son la compilación **b131** del **2026-09-22**, hecha desde el código de este mismo
-> repositorio (etiqueta `b131-funcional`), y es la que está **verificada en placa**.
+> Los cuatro son la compilación **b157** del **2026-09-22**, hecha desde el código de este mismo
+> repositorio (etiqueta `b157-funcional`), y es la que está **verificada en placa**.
 > Para comprobar la huella en tu ordenador (Windows, PowerShell):
-> `Get-FileHash .\KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
+> `Get-FileHash .\KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
 
 > ⚠️ **El T-Echo necesita cargador S140 versión 7** y su fichero es el `..._S140v7.uf2`.
 > Comprueba la versión en el fichero **`INFO_UF2.TXT`** de la unidad de grabación: debe
@@ -239,7 +239,7 @@ de dos sitios distintos:
 
 | De dónde sale la ruta | Para qué sirve | Cuánto cabe |
 |---|---|---|
-| 📍 **El track en vivo**: lo graba el nodo solo, desde que coge posición | **Volver sobre tus pasos**, «Volver a casa» | Unos **80 km** de camino. Parado, unos **136 h** (casi 6 días) |
+| 📍 **Tus tracks grabados**: los graba el nodo solo, desde que coge posición | **Volver sobre tus pasos**, «Volver a casa» | Unos **68 km** de camino en total. Parado, unas **113 h** (casi 5 días) |
 | 📥 **Cinco rutas cargadas** a mano, de un GPX que te bajas de internet | Que el nodo **te guíe** por una ruta de otro | Unos **17 km** cada una |
 
 ### El track en vivo: por dónde has pasado
@@ -285,11 +285,35 @@ Cada ranura aguanta unos **17 km** de ruta. En la pantalla no se guardan con nom
 
 | Opción | Qué hace |
 |---|---|
-| **Track en vivo** | Los puntos que llevas grabados y **desde cuándo** |
-| **Empezar nuevo** | **Tira el track en vivo y empieza uno desde donde estás.** Hace falta: si no, «Volver a casa» te mandaría al principio del track viejo (por ejemplo, a tu casa) en vez de a donde has dejado el nodo |
-| **Las 5 ranuras** | Eliges cuál de las rutas que tienes cargadas quieres seguir |
-| **Volver a casa** | Te lleva de vuelta por donde viniste |
+| **Volver a casa** | Entra en **la lista de tus tracks grabados** (ver abajo) y te lleva de vuelta por el que elijas |
+| **Las 5 ranuras** | Eliges cuál de las rutas que te has bajado quieres seguir |
 | **Finalizar guiado** | Se acaba la guía **y el nodo vuelve a grabar** tu track |
+
+#### Volver a casa: la lista de tus tracks
+
+Al entrar en **Volver a casa** sale **la lista de lo que ha grabado el aparato**, de lo más reciente
+a lo más viejo, con la **fecha**, la **hora** en que empezó cada uno y **los metros** de camino:
+
+```
+< Volver
+Salir
+06/10 13:43  3420 m     <- el de ahora mismo, siempre el primero
+05/10 17:10  8150 m
+04/10 09:15  2100 m
+```
+
+Eliges uno y el nodo te guía **hacia atrás** por él: vuelves por donde viniste.
+
+> ⚠️ **«Volver a casa» es una metáfora.** No es «casa»: es **el punto donde empezaste**. El nodo usa
+> tu camino de verdad, al revés, para devolverte por donde viniste.
+
+> ⚠️ **Los tracks viejos desaparecen de la lista cuando el anillo se llena.** El track guarda unos
+> 68 km: cuando se llena, empieza a borrar por el principio, y las salidas que se quedan sin camino
+> **no salen en la lista**. Una lista que ofrece algo que ya no existe es mentir.
+
+> ⚠️ **El aparato parte el día en «salidas» cuando está mucho rato sin apuntar nada** (más de 5
+> horas). Un día de monte entero cabe en una sola salida; si te quedas parado más de 5 horas, se
+> parte en dos.
 
 > ⚠️ **Esto es solo de las placas T-Echo y T-Echo Plus.** Las Faketec **no** lo llevan: su memoria
 > no está repartida igual y no se ha comprobado que quepa ahí. El propio firmware lo dice: las
@@ -572,7 +596,7 @@ comes from two different places:
 
 | Where the route comes from | What it is for | How much fits |
 |---|---|---|
-| 📍 **The live track**: the node records it on its own, as soon as it gets a fix | **Walking back the way you came**, "Back home" | About **80 km** of walking. Standing still, about **136 h** (nearly 6 days) |
+| 📍 **Your recorded tracks**: the node records them on its own, as soon as it gets a fix | **Walking back the way you came**, "Back home" | About **68 km** of walking in total. Standing still, about **113 h** (nearly 5 days) |
 | 📥 **Five routes loaded by hand**, from a GPX you download | The node **guides you** along somebody else's route | About **17 km** each |
 
 #### The live track: where you have been
@@ -619,11 +643,35 @@ Each slot holds about **17 km** of route. Slots are not saved with a name: they 
 
 | Option | What it does |
 |---|---|
-| **Track en vivo** | The points recorded so far and **since when** |
-| **Empezar nuevo** | **Throws away the live track and starts a new one from where you are.** You need this: otherwise "Back home" would take you to the start of the old track (your house, for instance) instead of where you left the node |
-| **The 5 slots** | Pick whichever of the routes you have loaded |
-| **Volver a casa** | Takes you back the way you came |
-| **Finalizar guiado** | Guidance ends **and the node starts recording your track again** |
+| **Back home** | Opens **the list of your recorded tracks** (see below) and takes you back along the one you pick |
+| **The 5 slots** | You pick which of the routes you downloaded to follow |
+| **Finish guidance** | Guidance ends **and the node starts recording your track again** |
+
+#### Back home: the list of your tracks
+
+Opening **Back home** shows **the list of what the device has recorded**, newest first, with the
+**date**, the **time** it started and the **metres** of path:
+
+```
+< Back
+Exit
+06/10 13:43  3420 m     <- today's, always the first one
+05/10 17:10  8150 m
+04/10 09:15  2100 m
+```
+
+Pick one and the node guides you **backwards** along it: you return the way you came.
+
+> ⚠️ **"Back home" is a figure of speech.** It is not "home": it is **the point where you started**.
+> The node uses your real path, reversed, to send you back the way you came.
+
+> ⚠️ **Old tracks drop off the list when the ring fills up.** The track holds about 68 km: when it
+> fills, it starts erasing from the beginning, and outings with no path left **do not appear in the
+> list**. A list that offers something that no longer exists is lying.
+
+> ⚠️ **The device splits the day into "outings" when it goes a long time without logging anything**
+> (more than 5 hours). A whole day in the hills fits in one outing; if you stand still for more than
+> 5 hours, it splits in two.
 
 > ⚠️ **This is T-Echo and T-Echo Plus only.** Faketec boards do **not** have it: their memory is not
 > laid out the same way and it has not been checked that it fits there. The firmware itself says so:
@@ -650,27 +698,27 @@ publishing indoor positions**, or putting it away knowing that it draws nothing.
 
 | Your board | File |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 > ✅ **Every binary says what it carries (build counter fixed on 2026-09-16)**: the number goes up
-> **when the code changes**, so what the node answers over USB (`1.0alpha b131`) identifies the
+> **when the code changes**, so what the node answers over USB (`1.0alpha b157`) identifies the
 > firmware, and it matches the file name. Until that night the counter was stuck at `b9` (a bug in
 > the counter itself: seven firmware changes in a row came out with the same number), so **if you
-> downloaded a `..._b131_...` file, it is the same firmware as that old `b13` with the old number**:
+> downloaded a `..._b157_...` file, it is the same firmware as that old `b13` with the old number**:
 > always keep the highest number. Date and SHA-256 to check what you got:
 >
 > | File | Date | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b131_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 743936 | `B77AE319FD2F65A9372EAB24B99D8F627BFA081F4DDB48D7D32E848B34518285` |
-> | `KachoSystem_v1.0alpha_b131_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 743936 | `9A745E8B3383421E85FF3BEC0C519DE38EAC2A055FF7771B34054CEAE9F288EC` |
-> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1082880 | `E0212001E623CEDE2FC245AD9C22309FB50AC15FB730828947F28F09C78C6801` |
-> | `KachoSystem_v1.0alpha_b131_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1078784 | `CA625160924894A5FCE30776436B608CEEEB3D72653AB72C2F9972AE3AF86D3F` |
+> | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 744960 | `33DC4200254323DE32AF3551601E67D32CB580DAE0A0580708D3132F58C9F774` |
+> | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 744960 | `9C8C24D980CDF2B68B8BAF5643BCE4DA52CB83676EAE9158A5A5E70AEE5175D7` |
+> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1094656 | `1DD3A5A4C26C1B96908ACA6866A39995A841E5429D0C5B7A540219B73CCEDA0B` |
+> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1091072 | `D5C93A07E87D1B3791B79466256F258ABA7A3EE65384001EBD9BF98A8A445A46` |
 >
-> All four are the **b131** build of **2026-09-21**, made from this repository's code (tag
-> `b131-funcional`), and it is the one **verified on hardware**.
+> All four are the **b157** build of **2026-09-21**, made from this repository's code (tag
+> `b157-funcional`), and it is the one **verified on hardware**.
 
 ### Build
 

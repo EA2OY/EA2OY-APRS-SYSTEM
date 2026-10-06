@@ -1041,41 +1041,59 @@ En el configurador web puedes cargar hasta **cinco rutas** hechas por ti (por ej
 te hayas bajado de WikiLoc). Cada una cabe en una ranura, y cada ranura aguanta unas **17 km** de
 ruta. Estas no se graban solas: las metes tú desde el ordenador.
 
-### Antes de nada: «Empezar nuevo»
-
-**Esto es lo primero que hay que hacer al llegar al sitio donde empieza la excursión.**
-
-El nodo graba desde que enciende, así que si lo has tenido encendido en casa o en el coche, tu
-track en vivo **ya tiene puntos de antes** — y el principio de ese track es tu casa, no donde has
-aparcado. Si luego le pides «volver a casa», te llevaría... a tu casa de verdad, que no es lo que
-quieres.
-
-Para arreglarlo: abre el menú, entra en **Tracks**, ponte en **Empezar nuevo** y pulsa. El aparato
-te pregunta si estás seguro (porque borra lo que había) y, si dices que sí, **empieza un track
-nuevo desde donde estás**. A partir de ahí, el principio del track eres tú, ahí de pie.
-
-Hazlo **una vez al llegar**, y ya está.
-
 ### El menú de Tracks
 
 Se entra desde el menú principal, en la sección **Tracks**. Dentro hay una lista:
 
 | Lo que ves | Lo que es |
 |---|---|
-| `12/07 18:42` | Tu track en vivo, con la fecha y la hora en que empezó |
-| `Sin hora GPS` | Tu track en vivo, pero el GPS todavía no había dado la hora cuando empezó |
-| `NO GRABA` | Hay un track en vivo, pero **en este momento no está grabando** (ver más abajo) |
-| `Empezar nuevo` | Borra el track en vivo y empieza uno desde donde estás |
+| `Volver a casa` | Entra en **la lista de tus tracks grabados** (ver abajo) |
 | `1  12/07 18:42` | La ranura 1, con la fecha en que la cargaste |
 | `2  Vacía` | La ranura 2 está vacía |
-| `Volver a casa` | Te guía de vuelta por tu track en vivo, al revés |
+
+**Arriba está lo tuyo y abajo lo que te has bajado**, que son dos cosas distintas: `Volver a casa`
+son **tus caminos grabados**, y las ranuras son **rutas de fuera**.
 
 Las ranuras van numeradas del 1 al 5 para que no se confundan entre ellas cuando las cargas todas
-el mismo día.
+el mismo día. **Las ranuras piden pulsación LARGA**; si pulsas corto en una vacía, te lo dice.
+
+### «Volver a casa»: la lista de tus tracks grabados
+
+Al entrar en **Volver a casa** sale **todo lo que ha grabado el aparato**, de lo más reciente a lo
+más viejo, con la **fecha**, la **hora** en que empezó cada uno y **los metros** de camino:
+
+```
+< Volver
+Salir
+06/10 13:43  3420 m     <- el de ahora mismo, siempre el primero
+05/10 17:10  8150 m
+04/10 09:15  2100 m
+```
+
+Eliges uno y el nodo te guía **hacia atrás** por él: vuelves por donde viniste.
+
+**El de ahora mismo sale siempre el primero**, para que puedas volver sobre tus pasos sin esperar a
+nada.
+
+> ⚠️ **«Volver a casa» es una metáfora.** No es «casa»: es **el punto donde empezaste**. El nodo usa
+> tu camino de verdad, al revés, para devolverte por donde viniste.
+
+> ⚠️ **Los tracks viejos desaparecen de la lista cuando la memoria se llena.** El track guarda unos
+> **68 km**: cuando se llena, empieza a borrar por el principio, y las salidas que se quedan sin
+> camino **no salen en la lista**. Una lista que ofrece algo que ya no existe es mentir.
+
+> ⚠️ **El aparato parte el día en «salidas» cuando está mucho rato sin apuntar nada** (más de **5
+> horas**). Un día de monte entero cabe en una sola salida; si te quedas parado más de 5 horas, se
+> parte en dos.
+
+> 💡 **¿Y si has tenido el nodo encendido en casa o en el coche?** No hay que hacer nada: el aparato
+> **se apaga solo cuando la batería baja**, así que cada salida empieza donde toca. (Antes había un
+> botón «Empezar nuevo» para marcar el inicio a mano; **ya no hace falta y se ha quitado**.)
 
 ### Seguir una ruta: «Hacia adelante» y «Hacia atrás»
 
-Elige en la lista el track que quieras seguir (el vivo o una ranura) y pulsa. Sale un menú con:
+Elige en la lista el track que quieras seguir (una ranura, o uno de tus tracks grabados) y pulsa.
+Sale un menú con:
 
 - **Hacia adelante** — te guía por la ruta **en su sentido normal**.
 - **Hacia atrás** — te guía por la ruta **al revés**, del final al principio.
@@ -1083,10 +1101,11 @@ Elige en la lista el track que quieras seguir (el vivo o una ranura) y pulsa. Sa
 
 ### «Volver a casa»
 
-Es un atajo: **te guía de vuelta por tu track en vivo, al revés**. Sirve para lo típico: has subido
-al monte por un camino y quieres volver por el mismo sitio sin equivocarte en los cruces.
+Sirve para lo típico: has subido al monte por un camino y quieres volver por el mismo sitio sin
+equivocarte en los cruces. **Te guía de vuelta por tu propio camino, al revés.**
 
-Para que salga bien, acuérdate de **«Empezar nuevo» al llegar**.
+**No hay nada que preparar antes:** entras en **Volver a casa**, eliges tu salida de la lista (la de
+ahora mismo es la primera) y el nodo te devuelve por donde viniste.
 
 ### La pantalla de guiado
 

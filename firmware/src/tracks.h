@@ -293,6 +293,25 @@ bool tracksRanuraEscribe(uint8_t slot, uint32_t idx, const TrackPunto *p);
 bool tracksRanuraTermina(uint8_t slot);
 void tracksRanuraBorra(uint8_t slot);
 
+/**
+ * ★★ DIAGNOSTICO DEL NVMC (2026-10-07) ★★
+ *
+ * `tracksNvmcVencidas()` = cuantas veces la espera al NVMC se ha pasado del tope. **Si esto no es
+ * 0, el aparato ha estado a punto de quedarse colgado** escribiendo flash, y hay que mirarlo.
+ *
+ * POR QUE EXISTE: el bucle que espera a que el NVMC este listo **no tenia limite**, asi que si el
+ * NVMC no respondia el aparato se quedaba mudo para siempre. Se descubrio hablandole al nodo por el
+ * puerto: `track_begin` (el unico comando que BORRA paginas) no contestaba **ni en 40 segundos**,
+ * mientras que todo lo demas contestaba al instante.
+ *
+ * ★ Lo que NO se puede saber desde el ordenador es CUAL de las dos cosas pasa; por eso se cuenta.
+ */
+uint32_t tracksNvmcVencidas();
+uint32_t tracksNvmcEsperas();
+
+/** En que paso fallo la ultima preparacion de ranura, en palabras (para el mensaje de error). */
+const char *tracksRanuraFalloPalabra();
+
 // ===========================================================================
 //  ★★★ MOTOR DE NAVEGACION: seguir la LINEA del track (2026-09-22) ★★★
 //
@@ -336,6 +355,21 @@ struct TrackGuia {
 
 // Empieza a guiar. `slot` se ignora si la fuente es TRK_FUENTE_VIVO.
 bool tracksGuiaEmpieza(TrackFuente fuente, int slot, bool alReves);
+
+/**
+ * ★★ GUIAR POR UN TROZO DEL TRACK VIVO (2026-10-06) ★★
+ *
+ * Es lo que usa "volver a casa" cuando el operador elige UNA salida de la lista: el track vivo es
+ * una sola tirada con las salidas de varios dias pegadas, y hay que guiar SOLO por la elegida.
+ *
+ * @param desde  primer punto del trozo, en indices del track vivo tal cual (0 = el mas antiguo)
+ * @param hasta  uno mas alla del ultimo punto del trozo
+ *
+ * ★ POR QUE NO SE REUTILIZA `tracksGuiaEmpieza` CON UN PARAMETRO MAS: porque aquella recorre la
+ *   lista de FUENTES (el vivo o una ranura) y esta solo tiene sentido con el vivo. Un parametro
+ *   que solo vale para la mitad de los casos es una trampa para el que lo lea despues.
+ */
+bool tracksGuiaEmpiezaTrozo(uint32_t desde, uint32_t hasta, bool alReves);
 void tracksGuiaTermina();
 bool tracksGuiaActivo();
 void tracksGuiaEstado(TrackGuia *out);
