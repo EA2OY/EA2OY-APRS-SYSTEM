@@ -406,7 +406,7 @@ juntos:
 | 📡 **Kacho System** (este) | El **firmware del nodo APRS-LoRa de 433 MHz**: repetidor y rastreador |
 | ⚙️ **[Configurador web](https://github.com/EA2OY/CONFIGURADOR-WEB-APRS-EA2OY)** | El configurador, servido como página web (WebSerial y el mapa lo necesitan) |
 | 🏔️ **[NavaTastic](https://github.com/EA2OY/NavaTastic)** | El **firmware del repetidor solar de Meshtastic** para infraestructura de montaña |
-| 📱 **[APRS LoRa EA2OY](apk/APRS_LoRa_EA2OY_0.8.0-fase6.apk)** (app Android) | La **app del móvil para este nodo**, por **cable USB-C a USB-C**: leer y cambiar la configuración, mandar balizas, ver la consola, cargar rutas y actualizar el firmware del nodo. Es lo que sustituye al configurador web **en el móvil**, donde el navegador no deja hablar con el USB. **Descarga y detalles, más abajo** |
+| 📱 **[APRS LoRa EA2OY](apk/APRS_LoRa_EA2OY_0.8.1-fase6.apk)** (app Android) | La **app del móvil para este nodo**, por **cable USB-C a USB-C**: leer y cambiar la configuración, mandar balizas, ver la consola, cargar rutas y actualizar el firmware del nodo. Es lo que sustituye al configurador web **en el móvil**, donde el navegador no deja hablar con el USB. **Descarga y detalles, más abajo** |
 | 📱 **[MeshNavarra Utility](https://github.com/EA2OY/MeshNavarra-Utility)** | La **app Android** para administrar nodos **Meshtastic/NavaTastic**. **No es la de este nodo**: es otro proyecto, para otra red |
 | 🎮 **[Kacho Contest System](https://github.com/EA2OY/KachoContestSystem-demo)** | El **sistema de pulsadores** para concursos y eventos |
 
@@ -440,10 +440,12 @@ cargador del móvil sirve) y hace lo mismo que el configurador, pero desde el te
 
 ### ⬇️ Descargar
 
-**[APRS_LoRa_EA2OY_0.8.0-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.0-fase6.apk)** · 7,7 MB
+**[APRS_LoRa_EA2OY_0.8.1-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.1-fase6.apk)** · 7.6 MB
 
 Descarga el fichero en el móvil, ábrelo y acepta el aviso de Android sobre instalar aplicaciones de
 fuera de la tienda.
+
+> 🔒 **Para comprobar que te ha llegado entero** (SHA-256): `C5CDF04F7A5406472493C756931A4D0386AF098E77803449714BA26C195AB72A`
 
 > ⚠️ **Es una versión de PRUEBAS**: no está en ninguna tienda y **va firmada con la clave de
 > depuración** (Android te avisará de eso al instalarla). Es una versión «alpha» del proyecto:
@@ -743,10 +745,14 @@ you can read it with no signal.
 
 > 🔌 **A cable is required, and that is on purpose: our firmware does not support Bluetooth yet.**
 
-**[⬇️ Download APRS_LoRa_EA2OY_0.8.0-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.0-fase6.apk)** · 7.7 MB
+**[⬇️ Download APRS_LoRa_EA2OY_0.8.1-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.1-fase6.apk)** · 7.6 MB
 
 Download it on the phone and open it; Android will warn you about installing apps from outside the
-store. ⚠️ **It is a TEST build**: not in any store and **signed with the debug key**. It is an
+store.
+
+> 🔒 **To check your download arrived complete** (SHA-256): `C5CDF04F7A5406472493C756931A4D0386AF098E77803449714BA26C195AB72A`
+
+⚠️ **It is a TEST build**: not in any store and **signed with the debug key**. It is an
 «alpha» version of the project and may change. The app **sends nothing to any server**: it only
 talks to the node you plug in.
 
