@@ -176,6 +176,19 @@ void recorreLinea(const char *line, void *ctx) {
 //  Buscar una posicion dentro del track fino
 // ---------------------------------------------------------------------------
 
+/**
+ * ★★ EL MARGEN DE UNA PUNTA, EN UN SOLO SITIO (2026-10-07) ★★
+ *
+ * Una punta de salida (una baliza del registro) vale si el punto del track que le corresponde esta
+ * a menos de esto. Mas lejos significa que **esa punta ya no esta en el anillo**: su camino se lo
+ * comio el reciclado.
+ *
+ * ★ POR QUE VIVE AQUI Y NO EN EL BUCLE: antes estaba escrito dentro del anclaje, y el
+ *   `puntoMasCerca` necesitaba el mismo numero para saber cuando parar. **Dos copias del mismo
+ *   numero se separan**, y esta tarde ya ha pasado tres veces en este proyecto.
+ */
+constexpr double kRadioPuntaM = 2000.0;
+
 double metrosEntre(double lat1, double lon1, double lat2, double lon2) {
   const double cosLat = cos((lat1 + lat2) * 0.5 * M_PI / 180.0);
   const double dy = (lat2 - lat1) * 110540.0;
@@ -187,8 +200,17 @@ double metrosEntre(double lat1, double lon1, double lat2, double lon2) {
  * El indice del punto del track mas cercano a una posicion, buscando SOLO entre `desde` y `hasta`.
  *
  * ★ SE BUSCA EN UN TROZO, NO EN TODO EL TRACK, y por un motivo de velocidad: el track vivo tiene
- *   6.800 puntos y esto se llama una vez por punta de cada salida (hasta 20 veces). Buscando en
- *   todo el track serian 136.000 lecturas de flash cada vez que se abre la pantalla.
+ *   6.800 puntos y esto se llama una vez por punta de cada salida. Buscando en todo el track serian
+ *   decenas de miles de lecturas de flash cada vez que se abre la pantalla.
+ *
+ * ★★ SE DEVUELVE EL **MAS CERCANO**, Y ESO ES A PROPOSITO (2026-10-07) ★★
+ *   Se probo a devolver «el PRIMERO que entre en el margen» (el mas antiguo), pensando que asi las
+ *   salidas no se pisarian al repartirse el track. **Y estaba peor**: la salida nueva se enganchaba a
+ *   un punto del paseo VIEJO que estaba a menos de 2 km (calles paralelas, o el mismo camino hecho de
+ *   vuelta), y entonces se quedaba con los dos tramos y la otra salida desaparecia de la lista.
+ *   ★ El reparto entre salidas NO lo hace esta funcion: lo hace la comprobacion `dIni > dFin` del
+ *     anclaje (ver `tracksSesionesRehace`), que es la que de verdad distingue una punta de otra.
+ *   ★ Queda escrito para no volver a intentar el «primero del margen»: se probo, se midio, y era peor.
  */
 int32_t puntoMasCerca(double lat, double lon, uint32_t desde, uint32_t hasta, double *distOut) {
   int32_t mejor = -1;
@@ -197,7 +219,10 @@ int32_t puntoMasCerca(double lat, double lon, uint32_t desde, uint32_t hasta, do
   for (uint32_t i = desde; i < hasta; i++) {
     if (!tracksVivoLee(i, &p)) break;
     const double d = metrosEntre(lat, lon, (double)p.lat1e7 / 1e7, (double)p.lon1e7 / 1e7);
-    if (d < mejorD) { mejorD = d; mejor = (int32_t)i; }
+    if (d < mejorD) {
+      mejorD = d;
+      mejor = (int32_t)i;
+    }
   }
   if (distOut) *distOut = mejorD;
   return mejor;
@@ -277,43 +302,130 @@ uint8_t tracksSesionesRehace() {
   gDelRegistro = r.cuantas;
 
   // ---- 2) anclar cada salida al track, DE LA MAS RECIENTE A LA MAS VIEJA ----
-  //   Se va de la mas nueva a la mas vieja para poder acotar la busqueda: el FINAL de una salida
-  //   tiene que estar ANTES del PRINCIPIO de la siguiente (los puntos van en orden de grabacion).
-  //   Asi la busqueda de cada punta solo mira su trozo, en vez de todo el track.
+  //
+  // ===========================================================================
+  //  ★★★ AQUI ESTABAN LOS DOS FALLOS QUE DEJABAN LA LISTA VACIA (2026-10-07) ★★★
+  //
+  //  FALLO 1: UN PASEO DE IDA Y VUELTA SE DESCARTABA SIEMPRE.
+  //    Se buscaba donde encaja la punta FINAL de la salida, y luego la punta INICIAL **solo hasta
+  //    ese indice** (`0 .. iFin+1`). Pero en un paseo de ida y vuelta **las dos puntas caen en el
+  //    MISMO sitio** (empiezas y acabas en el mismo aparcamiento), asi que salia `iIni == iFin`...
+  //    y la linea `if (iIni >= iFin) continue;` lo tiraba a la basura. **ENTERITO.**
+  //    Y es justo el caso del operador: su GPX se llama «recorrido de ida y vuelta», y sus paseos
+  //    son asi. Lo dijo exacto:
+  //        «hay en el nodo guardados "paseos" anteriores que he dado yo, y en la lista solo sale el
+  //         que esta en curso si es que existe»
+  //    ★ Y ESTO SE VIO REPRODUCIENDO LA LOGICA EN EL ORDENADOR con un paseo de ida y vuelta: salia
+  //      «DESCARTADA: el trozo sale al reves (ini=0, fin=0)».
+  //
+  //  FALLO 2: EL LIMITE DE 2000 m TIRABA LA SALIDA ENTERA.
+  //    Si el camino de una salida vieja ya no esta en el anillo, se descartaba **completa**, en vez
+  //    de ensenar el trozo que SI queda. El operador prefiere el trozo a nada.
+  //
+  //  ★★ COMO SE HACE AHORA: las dos puntas se buscan **POR SEPARADO**, y despues se ordenan. Si
+  //    caen en el mismo punto (ida y vuelta), el trozo es **de esa punta hasta donde llega el
+  //    anillo**, que es lo que el operador ha andado de verdad. Y nada se descarta por «salir al
+  //    reves»: ese caso ya no es un error, es un paseo circular.
+  // ===========================================================================
+  constexpr uint32_t kMinPuntos = 2;   // con un punto no hay camino que seguir
+
   uint32_t limiteFin = puntosTrack;      // por encima de esto ya es de una salida mas nueva
-  uint32_t limiteIni = puntosTrack;
+  uint32_t limiteIni = 0;                // por debajo, ya es de una salida mas vieja (o se perdio)
 
   for (int k = (int)r.cuantas - 1; k >= 0 && gCuenta < TRACK_SESIONES_MAX; k--) {
     const SalidaRegistro *s = &bruto[k];
     if (!s->hay) continue;
+    // ★ SE PARA SOLO CUANDO NO QUEDA **NI UN PUNTO** (2026-10-07).
+    //   Estaba `limiteFin <= limiteIni + 1`, que paraba antes de tiempo: una salida mal anclada
+    //   dejaba la ventana en un punto y **el bucle se cortaba, perdiendo todas las de detras**.
+    if (limiteIni >= limiteFin) break;
 
-    double dIni = 1e12, dFin = 1e12;
-    const int32_t iFin = puntoMasCerca(s->latFin, s->lonFin, 0, limiteFin, &dFin);
+    // --- punta FINAL: el punto MAS CERCANO dentro de lo que queda ---
+    double dFin = 1e12;
+    const int32_t iFin = puntoMasCerca(s->latFin, s->lonFin, limiteIni, limiteFin, &dFin);
     if (iFin < 0) continue;
-    const int32_t iIni = puntoMasCerca(s->latIni, s->lonIni, 0, (uint32_t)iFin + 1, &dIni);
+
+    // --- punta INICIAL: la ventana llega HASTA la punta final ---
+    //   ★ ESTO ES LO QUE ARREGLA EL IDA Y VUELTA: en un paseo que sale y vuelve al mismo sitio las
+    //     dos puntas caen en el MISMO punto del track, y asi sale `iIni == iFin` en vez de
+    //     descartarse.
+    double dIni = 1e12;
+    const int32_t iIni = puntoMasCerca(s->latIni, s->lonIni, limiteIni, (uint32_t)iFin + 1, &dIni);
     if (iIni < 0) continue;
 
-    // ★ LAS DOS PUNTAS TIENEN QUE SER CREIBLES. Si la baliza "mas cercana" esta a kilometros, es
-    //   que esa salida ya no tiene camino en el anillo (se lo comio el reciclado) o que algo no
-    //   cuadra: se deja fuera de la lista en vez de guiar a un sitio que no es.
-    const uint32_t kMaxDesvioM = 2000;
-    if (dFin > (double)kMaxDesvioM || dIni > (double)kMaxDesvioM) continue;
-    if (iIni >= iFin) continue;        // un trozo de menos de dos puntos no es un camino
+    // --- el trozo, ordenado ---
+    uint32_t a = (uint32_t)((iIni < iFin) ? iIni : iFin);
+    uint32_t b = (uint32_t)((iIni < iFin) ? iFin : iIni);
+
+    // ★★ LA COMPROBACION QUE REPARTE EL TRACK ENTRE LAS SALIDAS (2026-10-07) ★★
+    //   La punta INICIAL de un paseo esta mas cerca de su principio que de su final... **salvo en un
+    //   paseo de ida y vuelta, donde las dos son el mismo sitio**. Asi que si sale `dIni > dFin` de
+    //   forma clara, la busqueda de la punta inicial **se ha ido al trozo de otra salida** (una calle
+    //   que se cruza, o el mismo camino hecho al reves), y ese trozo **no es de esta salida**.
+    //   ★ Y la solucion es la buena para un paseo redondo: el trozo empieza EN SU PUNTA, que es el
+    //     mismo sitio donde acaba. Asi que `a` pasa a valer `b`.
+    //   ★ SE VIO PROBANDO la logica en el ordenador: con dos paseos seguidos, uno se quedaba con los
+    //     dos tramos y el otro desaparecia de la lista.
+    //   ★ Y POR ESO LAS PUNTAS SE BUSCAN POR **CERCANIA** Y NO «LA PRIMERA QUE ENTRE EN EL MARGEN»:
+    //     probando esa otra idea, la salida nueva se enganchaba a un punto del paseo VIEJO que estaba
+    //     a menos de 2 km (calles paralelas, o el mismo camino de vuelta). El reparto lo hace esta
+    //     comprobacion, que es la que de verdad distingue una punta de otra. Queda anotado para no
+    //     volver a intentarlo.
+    if (dIni > dFin) a = b;
+
+    // ★ LAS DOS PUNTAS EN EL MISMO PUNTO = PASEOS DE IDA Y VUELTA (o uno muy corto).
+    //   Entonces el trozo es **de ahi hasta donde llega la parte de arriba**, que es lo que se ha
+    //   andado despues de esa punta. ★ Y NO se toca `a`, que es la linea que hacia que la ventana
+    //   se cerrara y se perdieran las salidas siguientes.
+    if (a == b && limiteFin > b + 1) b = limiteFin - 1;
+
+    const bool iniPerdida = (dIni > (double)kRadioPuntaM);
+    const bool finPerdida = (dFin > (double)kRadioPuntaM);
+
+    // ★ SI LAS DOS PUNTAS SE PERDIERON (el reciclado del anillo se llevo el principio Y el final de
+    //   esa salida), se prueba **por el MEDIO del recorrido**: asi todavia se puede ensenar el trozo
+    //   que quede entre medias, en vez de tirar la salida entera.
+    //   Es lo que passaba con «solo sale el que esta en curso»: las de antes tenian las puntas
+    //   borradas y desaparecian completas.
+    if (iniPerdida && finPerdida) {
+      const double laMed = (s->latIni + s->latFin) * 0.5;
+      const double loMed = (s->lonIni + s->lonFin) * 0.5;
+      double dMed = 1e12;
+      const int32_t iMed = puntoMasCerca(laMed, loMed, limiteIni, limiteFin, &dMed);
+      if (iMed < 0 || dMed > (double)kRadioPuntaM) continue;   // de esta no queda nada, ni el medio
+      a = limiteIni;
+      b = limiteFin - 1;
+    } else {
+      if (iniPerdida) a = limiteIni;         // empieza donde empieza lo que queda
+      if (finPerdida) b = limiteFin - 1;     // acaba donde acaba lo que queda
+    }
+
+    // --- se acota a lo que hay, y se comprueba que sea un camino ---
+    if (a < limiteIni) a = limiteIni;
+    if (b >= limiteFin) b = limiteFin - 1;
+    if (a > b) { const uint32_t t2 = a; a = b; b = t2; }
+    if (b < a + (kMinPuntos - 1)) continue;    // menos de dos puntos no es un camino
 
     TrackSesion *dst = &gLista[gCuenta];
     memset(dst, 0, sizeof(*dst));
     dst->valida = true;
     dst->year = s->year; dst->month = s->month; dst->day = s->day;
     dst->hour = s->hour; dst->minute = s->minute;
-    dst->puntos = (uint32_t)(iFin - iIni + 1);
-    dst->metros = metrosDelTrozo((uint32_t)iIni, (uint32_t)iFin + 1);
+    dst->puntos = b - a + 1;
+    dst->metros = metrosDelTrozo(a, b + 1);
     // ★ Y SE GUARDA EL TROZO PARA PODER GUIAR POR EL. El motor de guiado necesita saber desde
     //   donde hasta donde leer; se le pasa al empezar (ver `tracksGuiaEmpiezaTrozo`).
-    gDesde[gCuenta] = (uint32_t)iIni;
-    gHasta[gCuenta] = (uint32_t)iFin + 1;
+    gDesde[gCuenta] = a;
+    gHasta[gCuenta] = b + 1;
     gCuenta++;
 
-    limiteFin = (uint32_t)iIni;        // la siguiente (mas vieja) acaba antes de donde empieza esta
+    // La siguiente (mas vieja) acaba antes de donde empieza esta.
+    // ★ SI `a` NO BAJA, NO SE DEJA LA VENTANA VACIA: se protege con `limiteIni + 1`, porque si no
+    //   el bucle se cortaba y se perdian las salidas de detras.
+    uint32_t nuevoFin = a;
+    if (nuevoFin <= limiteIni) nuevoFin = limiteIni + 1;
+    if (nuevoFin > limiteFin) nuevoFin = limiteFin;
+    limiteFin = nuevoFin;
   }
 
   // =========================================================================
