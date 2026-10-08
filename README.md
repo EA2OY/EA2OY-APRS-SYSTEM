@@ -141,37 +141,37 @@ fichero con **todo** lo que lleva grabado, así que siempre podrás dejarla como
 
 | Tu placa | Fichero |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b161_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b161_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, con cargador **S140 versión 7** | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 > 📌 **Los cuatro ficheros de `firmware/release/` son estos** (los nombres exactos, para
 > que no haya dudas al buscar en la carpeta):
-> `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2`,
-> `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2`,
-> `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` y
-> `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2`.
+> `KachoSystem_v1.0alpha_b161_Faketec_E22P-433M30S.uf2`,
+> `KachoSystem_v1.0alpha_b161_Faketec_HT-RA62_433.uf2`,
+> `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo-Plus_S140v7.uf2` y
+> `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo_S140v7.uf2`.
 
 > ✅ **Cada binario dice lo que lleva (contador de compilación arreglado el 2026-09-16)**: el
 > número sube **cuando cambia el código**, así que el que contesta el nodo por USB
-> (`1.0alpha b157`) identifica el firmware que lleva dentro, y coincide con el nombre del
+> (`1.0alpha b161`) identifica el firmware que lleva dentro, y coincide con el nombre del
 > fichero. Hasta esa noche el contador estuvo clavado en `b9` (un fallo del propio contador:
 > siete cambios de firmware seguidos salieron con el mismo número), así que **si tienes
-> descargado un `..._b157_...`, es el mismo firmware que aquel `b13` pero con el número viejo**:
+> descargado un `..._b161_...`, es el mismo firmware que aquel `b13` pero con el número viejo**:
 > quédate siempre con el número más alto.
 >
 > | Fichero | Fecha | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 744960 | `33DC4200254323DE32AF3551601E67D32CB580DAE0A0580708D3132F58C9F774` |
-> | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 744960 | `9C8C24D980CDF2B68B8BAF5643BCE4DA52CB83676EAE9158A5A5E70AEE5175D7` |
-> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1094656 | `1DD3A5A4C26C1B96908ACA6866A39995A841E5429D0C5B7A540219B73CCEDA0B` |
-> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1091072 | `D5C93A07E87D1B3791B79466256F258ABA7A3EE65384001EBD9BF98A8A445A46` |
+> | `KachoSystem_v1.0alpha_b161_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 744960 | `1612FE799EA66473675CB5BED90F4C93EE36F8B0B00C94E5AD05069AEEF18198` |
+> | `KachoSystem_v1.0alpha_b161_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 744960 | `174D76D9FA0447E879FCBAF1B77AA1549390C3632F76251245F2D8C34C523756` |
+> | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1095168 | `CA43D0B83541891B876D81E1CD5C9327685F5CFEC113D0096C270AEC8D980873` |
+> | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1091072 | `8170180B95F220E8C4DFB0A1BD80C54ED1B8D5C66FC6DB518AE4C912390E2508` |
 >
-> Los cuatro son la compilación **b157** del **2026-09-22**, hecha desde el código de este mismo
-> repositorio (etiqueta `b157-funcional`), y es la que está **verificada en placa**.
+> Los cuatro son la compilación **b161** del **2026-09-22**, hecha desde el código de este mismo
+> repositorio (etiqueta `b161-funcional`), y es la que está **verificada en placa**.
 > Para comprobar la huella en tu ordenador (Windows, PowerShell):
-> `Get-FileHash .\KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
+> `Get-FileHash .\KachoSystem_v1.0alpha_b161_LilyGO_T-Echo_S140v7.uf2 -Algorithm SHA256`
 
 > ⚠️ **El T-Echo necesita cargador S140 versión 7** y su fichero es el `..._S140v7.uf2`.
 > Comprueba la versión en el fichero **`INFO_UF2.TXT`** de la unidad de grabación: debe
@@ -406,7 +406,7 @@ juntos:
 | 📡 **Kacho System** (este) | El **firmware del nodo APRS-LoRa de 433 MHz**: repetidor y rastreador |
 | ⚙️ **[Configurador web](https://github.com/EA2OY/CONFIGURADOR-WEB-APRS-EA2OY)** | El configurador, servido como página web (WebSerial y el mapa lo necesitan) |
 | 🏔️ **[NavaTastic](https://github.com/EA2OY/NavaTastic)** | El **firmware del repetidor solar de Meshtastic** para infraestructura de montaña |
-| 📱 **[APRS LoRa EA2OY](apk/APRS_LoRa_EA2OY_0.8.1-fase6.apk)** (app Android) | La **app del móvil para este nodo**, por **cable USB-C a USB-C**: leer y cambiar la configuración, mandar balizas, ver la consola, cargar rutas y actualizar el firmware del nodo. Es lo que sustituye al configurador web **en el móvil**, donde el navegador no deja hablar con el USB. **Descarga y detalles, más abajo** |
+| 📱 **[APRS LoRa EA2OY](apk/APRS_LoRa_EA2OY_0.8.2-fase6.apk)** (app Android) | La **app del móvil para este nodo**, por **cable USB-C a USB-C**: leer y cambiar la configuración, mandar balizas, ver la consola, cargar rutas y actualizar el firmware del nodo. Es lo que sustituye al configurador web **en el móvil**, donde el navegador no deja hablar con el USB. **Descarga y detalles, más abajo** |
 | 📱 **[MeshNavarra Utility](https://github.com/EA2OY/MeshNavarra-Utility)** | La **app Android** para administrar nodos **Meshtastic/NavaTastic**. **No es la de este nodo**: es otro proyecto, para otra red |
 | 🎮 **[Kacho Contest System](https://github.com/EA2OY/KachoContestSystem-demo)** | El **sistema de pulsadores** para concursos y eventos |
 
@@ -440,12 +440,14 @@ cargador del móvil sirve) y hace lo mismo que el configurador, pero desde el te
 
 ### ⬇️ Descargar
 
-**[APRS_LoRa_EA2OY_0.8.1-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.1-fase6.apk)** · 7.6 MB
+**[APRS_LoRa_EA2OY_0.8.2-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.2-fase6.apk)** · 7.6 MB
 
 Descarga el fichero en el móvil, ábrelo y acepta el aviso de Android sobre instalar aplicaciones de
 fuera de la tienda.
 
-> 🔒 **Para comprobar que te ha llegado entero** (SHA-256): `C5CDF04F7A5406472493C756931A4D0386AF098E77803449714BA26C195AB72A`
+> 🔒 **Para comprobar que te ha llegado entero** (SHA-256): `B434FF48395449567C2400930DE1CC32E388357922DB553667E73C480BA91E52`
+
+> 🔒 **Para comprobar que te ha llegado entero** (SHA-256): `B434FF48395449567C2400930DE1CC32E388357922DB553667E73C480BA91E52`
 
 > ⚠️ **Es una versión de PRUEBAS**: no está en ninguna tienda y **va firmada con la clave de
 > depuración** (Android te avisará de eso al instalarla). Es una versión «alpha» del proyecto:
@@ -700,27 +702,27 @@ publishing indoor positions**, or putting it away knowing that it draws nothing.
 
 | Your board | File |
 |---|---|
-| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` |
-| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` |
-| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` |
-| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` |
+| Faketec V1-V6 + **HT-RA62** (SX1262) | `KachoSystem_v1.0alpha_b161_Faketec_HT-RA62_433.uf2` |
+| Faketec / ProMicro + **E22P-433M30S** | `KachoSystem_v1.0alpha_b161_Faketec_E22P-433M30S.uf2` |
+| **LilyGO T-Echo**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo_S140v7.uf2` |
+| **LilyGO T-Echo Plus**, bootloader **S140 version 7** | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo-Plus_S140v7.uf2` |
 
 > ✅ **Every binary says what it carries (build counter fixed on 2026-09-16)**: the number goes up
-> **when the code changes**, so what the node answers over USB (`1.0alpha b157`) identifies the
+> **when the code changes**, so what the node answers over USB (`1.0alpha b161`) identifies the
 > firmware, and it matches the file name. Until that night the counter was stuck at `b9` (a bug in
 > the counter itself: seven firmware changes in a row came out with the same number), so **if you
-> downloaded a `..._b157_...` file, it is the same firmware as that old `b13` with the old number**:
+> downloaded a `..._b161_...` file, it is the same firmware as that old `b13` with the old number**:
 > always keep the highest number. Date and SHA-256 to check what you got:
 >
 > | File | Date | Bytes | SHA-256 |
 > |---|---|---|---|
-> | `KachoSystem_v1.0alpha_b157_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 744960 | `33DC4200254323DE32AF3551601E67D32CB580DAE0A0580708D3132F58C9F774` |
-> | `KachoSystem_v1.0alpha_b157_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 744960 | `9C8C24D980CDF2B68B8BAF5643BCE4DA52CB83676EAE9158A5A5E70AEE5175D7` |
-> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1094656 | `1DD3A5A4C26C1B96908ACA6866A39995A841E5429D0C5B7A540219B73CCEDA0B` |
-> | `KachoSystem_v1.0alpha_b157_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1091072 | `D5C93A07E87D1B3791B79466256F258ABA7A3EE65384001EBD9BF98A8A445A46` |
+> | `KachoSystem_v1.0alpha_b161_Faketec_E22P-433M30S.uf2` | 2026-09-22 | 744960 | `1612FE799EA66473675CB5BED90F4C93EE36F8B0B00C94E5AD05069AEEF18198` |
+> | `KachoSystem_v1.0alpha_b161_Faketec_HT-RA62_433.uf2` | 2026-09-22 | 744960 | `174D76D9FA0447E879FCBAF1B77AA1549390C3632F76251245F2D8C34C523756` |
+> | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo-Plus_S140v7.uf2` | 2026-09-22 | 1095168 | `CA43D0B83541891B876D81E1CD5C9327685F5CFEC113D0096C270AEC8D980873` |
+> | `KachoSystem_v1.0alpha_b161_LilyGO_T-Echo_S140v7.uf2` | 2026-09-22 | 1091072 | `8170180B95F220E8C4DFB0A1BD80C54ED1B8D5C66FC6DB518AE4C912390E2508` |
 >
-> All four are the **b157** build of **2026-09-21**, made from this repository's code (tag
-> `b157-funcional`), and it is the one **verified on hardware**.
+> All four are the **b161** build of **2026-09-21**, made from this repository's code (tag
+> `b161-funcional`), and it is the one **verified on hardware**.
 
 ### Build
 
@@ -745,12 +747,12 @@ you can read it with no signal.
 
 > 🔌 **A cable is required, and that is on purpose: our firmware does not support Bluetooth yet.**
 
-**[⬇️ Download APRS_LoRa_EA2OY_0.8.1-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.1-fase6.apk)** · 7.6 MB
+**[⬇️ Download APRS_LoRa_EA2OY_0.8.2-fase6.apk](apk/APRS_LoRa_EA2OY_0.8.2-fase6.apk)** · 7.6 MB
 
 Download it on the phone and open it; Android will warn you about installing apps from outside the
 store.
 
-> 🔒 **To check your download arrived complete** (SHA-256): `C5CDF04F7A5406472493C756931A4D0386AF098E77803449714BA26C195AB72A`
+> 🔒 **To check your download arrived complete** (SHA-256): `B434FF48395449567C2400930DE1CC32E388357922DB553667E73C480BA91E52`
 
 ⚠️ **It is a TEST build**: not in any store and **signed with the debug key**. It is an
 «alpha» version of the project and may change. The app **sends nothing to any server**: it only

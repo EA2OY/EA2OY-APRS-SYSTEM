@@ -152,21 +152,35 @@ static void feedbackPulsacion() {
 // ★ SIN EL AVISO, QUE SE DA UNA VEZ POR RAFAGA (2026-09-16): de este cuerpo se cobran
 //   VARIOS seguidos cuando el operador toca en rafaga (ver handleButton), y no tiene
 //   sentido repetir luz+pitido+vibracion por cada uno: sonarian pegados.
+// ★★★ «HAY ALGO ABIERTO QUE SE NAVEGA»: EL MENU **O** LAS PANTALLAS DE TRACKS (2026-10-07) ★★★
+//
+//  ESTA CONDICION SE REPETIA EN DOS SITIOS, Y ESO FUE EL FALLO.
+//  Las pantallas de tracks **NO son el menu**: ponen `gMenuOn = false` A PROPOSITO (lo sustituyen).
+//  Asi que preguntar solo `menuIsOpen()` **no las ve**.
+//    - El TACTIL tenia la condicion buena desde el 2026-09-22 (preguntaba las dos cosas).
+//    - El BOTON FISICO no, y caia en la rama de «cambiar de escena». Consecuencia, tal cual la
+//      conto el operador: **«en el track para volver a casa, elijo el track, pulso y no hace nada.
+//      tampoco funciona volver y salir»**.
+//    - Y el DOBLE TOQUE tampoco, asi que con una pantalla abierta **mandaba una baliza por radio**.
+//  ★ LA LECCION: **una condicion copiada en tres sitios acaba separandose en dos de ellos.** Ahora
+//    se escribe UNA vez, aqui, y la usan los tres. Si hay que cambiarla, se cambia en un sitio.
+static bool hayPantallaQueNavega() {
+  if (menuIsOpen()) return true;
+#ifdef TRACKS_DISPONIBLE
+  if (pantallaTracksActiva()) return true;
+#endif
+  return false;
+}
+
 static void accionToqueAccion() {
   // ★★ EL TACTIL TAMBIEN NAVEGA EN LAS PANTALLAS DE TRACKS (2026-09-22) ★★
   //   Estaba puesto como `if (menuIsOpen()) menuNavigate();`, y las pantallas de tracks ponen
   //   `gMenuOn = false` A PROPOSITO (sustituyen al menu de ajustes: no SON el menu). Resultado:
   //   con la lista de tracks abierta, TOCAR CAMBIABA DE ESCENA en vez de mover la seleccion.
-  //   El BOTON FISICO si navegaba, porque llama a `menuShort()` directamente, y esa funcion tiene
-  //   su propia puerta para las pantallas de tracks. O sea que el mismo gesto hacia dos cosas
-  //   distintas segun por donde entrara. Lo vio el operador en el aparato.
-  //   ★ La condicion buena es "hay algo abierto que se navega": el menu O las pantallas de
-  //     tracks. Y `menuNavigate()` ya sabe cual de los dos es.
-  if (menuIsOpen()
-#ifdef TRACKS_DISPONIBLE
-      || pantallaTracksActiva()
-#endif
-     ) {
+  //   ★ La condicion buena es "hay algo abierto que se navega", y vive en `hayPantallaQueNavega()`
+  //     para que la usen los tres gestos y no se puedan separar. Y `menuNavigate()` ya sabe cual de
+  //     los dos esta abierto.
+  if (hayPantallaQueNavega()) {
     menuNavigate();
   }
   else if (!displayIsOn()) displayWake();
@@ -174,11 +188,13 @@ static void accionToqueAccion() {
 }
 
 static void despachaEvento(ButtonEvent ev) {
+  const bool hayPantallaQueNavegaAhora = hayPantallaQueNavega();
+
   if (ev == BTN_SHORT) {
     if (!displayIsOn()) {
       displayWake();
       if (!tncActive()) Serial.println(F("{\"button\":\"display\"}"));
-    } else if (menuIsOpen()) {
+    } else if (hayPantallaQueNavegaAhora) {
       menuShort();
     } else {
       displayNextScene();   // false = boton fisico: no se aplaza el repintado
@@ -189,7 +205,7 @@ static void despachaEvento(ButtonEvent ev) {
   if (ev == BTN_LONG) {
     if (!displayIsOn()) {
       displayWake();
-    } else if (menuIsOpen()) {
+    } else if (hayPantallaQueNavegaAhora) {
       menuLong();  // enter / edit / execute / confirm
     } else {
       menuOpen();
@@ -202,7 +218,12 @@ static void despachaEvento(ButtonEvent ev) {
     // dispara nada descontrolado: si estas editando, solo cancela la edicion (vuelve a la
     // lista); si no estas editando, no hace nada. Antes hacia menuShort() dos veces, lo que
     // podia EJECUTAR DOS VECES una accion (dos balizas, reinicio, borrado) — incoherente.
-    if (displayIsOn() && menuIsOpen()) {
+    //
+    // ★ Y LO MISMO CON LAS PANTALLAS DE TRACKS (2026-10-07): aqui ponia solo `menuIsOpen()`, y
+    //   esas pantallas NO son el menu (ponen `gMenuOn = false`). O sea que **con la lista de
+    //   tracks abierta, un doble toque mandaba una BALIZA por radio**, que no es lo que nadie
+    //   espera mientras esta eligiendo una ruta en pantalla. Ahora tambien se ignoran.
+    if (displayIsOn() && hayPantallaQueNavega()) {
       if (menuIsEditing()) menuEditCancel();
       return;
     }

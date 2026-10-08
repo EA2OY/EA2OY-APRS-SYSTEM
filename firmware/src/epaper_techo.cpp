@@ -4150,6 +4150,28 @@ void pantallaTracksPinta() {  // ★★ EL SALTO DE FILA, EN UN SOLO SITIO (2026
       snprintf(b, sizeof b, "%.5f %.5f", gp.lat, gp.lon);
       drawText(8, kFilaCoord, b, 1);
     }
+
+    // ---- 7) COMO SE SALE DE AQUI (2026-10-07) ----
+    //   ★★ ESTO FALTABA, Y ES UN FALLO DE DISEÑO, NO UN ADORNO ★★
+    //     La pantalla de guiado **NO se cierra sola**, y es a proposito: es una pantalla de trabajo
+    //     que se mira de reojo mientras andas, y si se cerrara a los 15 segundos habria que dar
+    //     cuatro gestos para volver a ver el rumbo. Pero **la pantalla no decia como se sale**, y
+    //     el operador tuvo que preguntarlo:
+    //         «una vez dentro del guiado, como salgo?»
+    //     Y es facil de entender por que: **la pulsacion CORTA no sale** (cambia entre la vista de
+    //     cerca y la del track entero), asi que quien prueba el corto ve que la pantalla hace cosas
+    //     y no encuentra la salida. **Una pantalla de la que no sabes salir es una trampa**, por muy
+    //     bien que funcione todo lo demas.
+    //   ★ AHORA SE DICE EN LA PROPIA PANTALLA, que es donde hace falta saberlo. Va en letra pequeña
+    //     (escala 1) y en la ultima fila libre, para no quitarle sitio a los datos: lo que se mira
+    //     andando es la flecha y los metros, no esto.
+    //   ★ Y EL TEXTO ESTA MEDIDO, NO ELEGIDO A OJO: a escala 1 cada caracter son 5 px, el panel
+    //     tiene 200 y se empieza en x=8, o sea que caben **30 caracteres**. El primer intento ponia
+    //     "LARGO: salir   CORTO: cerca/entero", que son 204 px: **se salia del panel**. Este son
+    //     156 px y dice lo mismo con menos letras.
+    //     (Medido con `tools/prueba_disposicion_guia.py`, que vigila que ningun texto se salga.)
+    drawText(8, 170, "LARGO: salir  CORTO: vista", 1);
+
     return;
   }
 }

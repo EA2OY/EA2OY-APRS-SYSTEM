@@ -1123,6 +1123,7 @@ DESV   18 m                  <- cuanto te has apartado de la ruta
 FALTAN 2.40 km               <- lo que te queda POR LA RUTA
 ALT 1420 m                   <- la altitud
 42.80413 -2.12345            <- tus coordenadas
+LARGO: salir  CORTO: vista   <- cómo se sale
 ```
 
 - La **cruz** (`✛`) eres tú. Si la cruz se va de la línea de puntos, es que te has salido.
@@ -1132,9 +1133,26 @@ ALT 1420 m                   <- la altitud
   vuelta a un barranco, pone más de lo que parece en el mapa. Es lo correcto, porque es lo que vas
   a andar.
 
+### Cómo se sale del guiado
+
+**Pulsación LARGA.** Vuelves al menú de Tracks, donde estabas.
+
+> ⚠️ **La pulsación CORTA no sale**: cambia entre la vista de cerca y la del track entero. Si pruebas
+> el corto, parece que la pantalla hace cosas y no encuentras la salida. **Por eso lo pone abajo, en
+> la propia pantalla.**
+
+> ⚠️ **Esta pantalla no se cierra sola, y es a propósito.** Es una pantalla de trabajo que se mira de
+> reojo mientras andas: si se cerrara a los pocos segundos, tendrías que dar varios gestos para
+> volver a ver el rumbo. **La cierras tú**, cuando quieras.
+
 **Una pulsación corta cambia entre la vista de cerca y la vista del track entero.** La de cerca
 enseña el trozo que tienes alrededor (más o menos kilómetro y medio); la entera, toda la ruta de
 un vistazo.
+
+> 💡 **Salir del guiado NO es lo mismo que «Finalizar guiado».** Salir solo cierra la pantalla: el
+> nodo **sigue guiándote por dentro y sigue sin grabar tu track**. Si has terminado de verdad, entra
+> otra vez y usa **«Finalizar guiado»**, que es lo que hace que el nodo **vuelva a grabar** por
+> dónde vas.
 
 ### Lo que la flecha te va a decir, y por qué
 
